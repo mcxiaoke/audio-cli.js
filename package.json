@@ -1,0 +1,48 @@
+{
+  "name": "audio-cli",
+  "version": "0.1.0",
+  "description": "Command line utilities for analyze/split/convert/rename/edit audio files. ",
+  "main": "index.js",
+  "scripts": {
+    "start":"node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcxiaoke/audio-cli.js.git"
+  },
+  "keywords": [
+    "audio",
+    "split",
+    "convert",
+    "id3",
+    "ffmpeg",
+    "aac",
+    "mp3",
+    "ape",
+    "flac",
+    "command",
+    "utility",
+    "tool"
+  ],
+  "author": "Zhang Xiaoke <github@mcxiaoke.com>",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/mcxiaoke/audio-cli.js/issues"
+  },
+  "homepage": "https://github.com/mcxiaoke/audio-cli.js#readme",
+  "dependencies": {
+    "better-cue-parser": "^0.3.0",
+    "chalk": "^4.1.1",
+    "chardet": "^1.3.0",
+    "exiftool-vendored": "^15.2.0",
+    "fs-extra": "^10.0.0",
+    "iconv-lite": "^0.6.3",
+    "inquirer": "^8.1.2",
+    "klaw-sync": "^6.0.0",
+    "printf": "^0.6.1",
+    "sanitize-filename": "^1.6.3",
+    "workerpool": "^6.1.5",
+    "yargs": "^17.0.1"
+  }
+}

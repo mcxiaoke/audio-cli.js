@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-const klawSync = require("klaw-sync");
+const util = require("util");
+const fsWalk = require("@nodelib/fs.walk");
 const path = require("path");
 const chalk = require("chalk");
 const fs = require("fs-extra");
@@ -11,31 +12,85 @@ const d = require("./lib/debug");
 const un = require("./lib/unicode");
 const exif = require("./lib/exif");
 const { boolean } = require("yargs");
-const sanitize = require("sanitize-filename");
 const sqlite = require("sqlite");
 const sqlite3 = require("sqlite3");
 
 // https://www.exiftool.org/index.html#supported
 // https://exiftool.org/TagNames/ID3.html
 
-const yargs = require("yargs/yargs")(process.argv.slice(2));
-yargs
+async function listFiles(root, options) {
+  options = options || {};
+  const startMs = Date.now();
+  d.I("listFiles: Root", root, options);
+  // https://www.npmjs.com/package/@nodelib/fs.walk
+  // walk 31245 files in 31 seconds
+  const files = await util.promisify(fsWalk.walk)(
+    root,
+    Object.assign(
+      {
+        stats: true,
+        concurrency: 4 * cpuCount,
+        followSymbolicLinks: false,
+        throwErrorOnBrokenSymbolicLink: false,
+        errorFilter: (error) => error.code == "ENOENT",
+        // entryFilter: (entry) => h.isAudioFile(entry.path),
+      },
+      options || {}
+    )
+  );
+
+  // https://www.npmjs.com/package/readdirp
+  // walk 31245 files in 30 seconds
+  // const files = await readdirp.promise(root, {
+  //   fileFilter: options.fileFilter || options.entryFilter || Boolean,
+  //   type: "files",
+  //   alwaysStat: true,
+  // });
+  for (const [i, f] of files.entries()) {
+    d.D("listFiles: Item", i + 1, h.ps(f.path), h.fz(f.stats.size));
+  }
+  d.I(
+    "listFiles: Result",
+    `total ${files.length} files found in ${h.ht(startMs)}`
+  );
+  return files;
+}
+
+async function listAudioFiles(root) {
+  return listFiles(root, { entryFilter: (entry) => h.isAudioFile(entry.path) });
+}
+
+const configCli = (argv) => {
+  d.setLevel(argv.verbose);
+  d.D(argv);
+};
+const yargs = require("yargs/yargs")(process.argv.slice(2))
   .command(
-    ["parse <source> [options]", "ps"],
-    "Parse exif for audio files and save to database",
-    (yargs) => {},
+    ["parse <input> [options]", "ps"],
+    "Parse id3 metadata for audio files",
+    (yargs) => {
+      return yargs
+        .positional("input", {
+          describe: "Input folder that contains audio files",
+          type: "string",
+        })
+        .option("save", {
+          alias: "s",
+          type: "boolean",
+          describe: "Save parsed audio tags to database",
+        });
+    },
     (argv) => {
-      d.I(argv);
-      cmdParseTags(argv.source);
+      cmdParseTags(argv);
     }
   )
   .command(
-    ["splitcue <source> [options]", "split", "sc"],
-    "Split audio files by cue sheet to m4a(aac) format in source dir",
+    ["split <input> [options]", "split", "sc"],
+    "Split audio files by cue sheet and convert to m4a(aac)",
     (yargs) => {
       yargs
-        .positional("source", {
-          describe: "Source folder that contains audio files",
+        .positional("input", {
+          describe: "Input folder that contains audio files",
           type: "string",
         })
         .option("force", {
@@ -54,12 +109,12 @@ yargs
     // <> means required
     // [] means optional
     // <source> is argument name
-    ["convert <source> [options]", "ct"],
-    "Convert audio files to m4a(aac) format in source dir",
+    ["convert <input> [options]", "ct"],
+    "Convert audio files to m4a(aac) format in input dir",
     (yargs) => {
       yargs
-        .positional("source", {
-          describe: "Source folder that contains audio files",
+        .positional("input", {
+          describe: "Input folder that contains audio files",
           type: "string",
         })
         .option("force", {
@@ -74,13 +129,14 @@ yargs
     }
   )
   .command(
-    ["move <source> [options]", "mv"],
-    "Organize and move audio files by language in source dir",
+    ["move <input> [options]", "mv"],
+    "Organize audio files by language in input dir",
     (yargs) => {
       yargs
-        .positional("source", {
-          describe: "Source folder that contains audio files",
+        .positional("input", {
+          describe: "Input folder that contains audio files",
           type: "string",
+          normalize: true,
         })
         .option("lng", {
           alias: "l",
@@ -91,29 +147,26 @@ yargs
         .option("unknown", {
           alias: "u",
           type: boolean,
-          describe: "Ingore unknown language audio files (don't move)",
+          describe: "Move unidentified audio files to xx folder",
         });
     },
     (argv) => {
-      d.I(argv);
       cmdMoveByLng(argv);
     }
-  )
-  .usage("Usage: $0 <command> <source> [options]")
-  .epilog(
-    "Rename/Move/Convert/Split audio files\nCopyright 2021 @ Zhang Xiaoke"
   )
   .count("verbose")
   .alias("v", "verbose")
   .alias("h", "help")
+  .usage("Usage: $0 <command> <input> [options]")
+  .epilog("Move/Convert/Split audio files\nCopyright 2021 @ Zhang Xiaoke")
   .demandCommand(1, chalk.red("Missing command you want to execute!"))
   .showHelpOnFail()
-  .help();
-d.setLevel(yargs.argv.verbose);
-d.I(yargs.argv);
+  .help()
+  .middleware([configCli]);
+// this line is required to parse args
+yargs.argv; //==yargs.parse()
 
 async function cmdCueSplit(argv) {
-  console.log(argv);
   const root = path.resolve(argv.source);
   if (!root || !(await fs.pathExists(root))) {
     yargs.showHelp();
@@ -126,8 +179,9 @@ async function cmdCueSplit(argv) {
 async function executeCueSplit(root) {
   d.L(`executeCueSplit: ${root}`);
   const startMs = Date.now();
-  let files = klawSync(root, { nodir: true });
-  files = files.filter((f) => h.ext(f.path, true) == ".cue");
+  let files = await listFiles(root, {
+    entryFilter: (f) => h.ext(f.path, true) == ".cue",
+  });
   for (const f of files) {
     d.L(`Found CUE: ${h.ps(f.path)}`);
   }
@@ -281,7 +335,7 @@ async function executeConvert(root) {
   // list all files in dir recursilly
   // keep only non-m4a audio files
   // todo add check to ensure is audio file
-  const taskFiles = await checkFiles(klawSync(root, { nodir: true }));
+  const taskFiles = await checkFiles(await listAudioFiles(root));
   const taskPaths = taskFiles.map((f) => f.path);
   d.L(
     `executeConvert: ${taskPaths.length} audio files found in ${h.ht(startMs)}`
@@ -424,42 +478,32 @@ async function readAudioDBTags(root) {
   return files;
 }
 
-async function cmdParseTags(root) {
-  if (!root || !fs.pathExistsSync(root)) {
+async function cmdParseTags(argv) {
+  const cmd = argv._[0];
+  const input = path.resolve(argv.input);
+  let stats;
+  try {
+    stats = await fs.stat(input);
+  } catch (error) {
     yargs.showHelp();
-    d.E(chalk.red(`ERROR! Source '${root}' is not exists or not a directory!`));
+    d.E(chalk.red(`${cmd}: Invalid "${input}"`));
     return;
   }
-  await executeParseTags(root);
-}
-
-async function executeParseTags(root) {
-  // miragate json file to sqlite db
-  // try {
-  //   let files = await fs.readJSON("./data/alltags.json");
-  //   files = files.filter((f) => f.tags && f.tags.Artist && f.tags.Title);
-  //   await saveAudioDBTags(files);
-  // } catch (error) {
-  //   d.E(error);
-  // }
-
-  d.L(`Input: ${root}`);
+  d.L(cmd, input);
   let startMs = Date.now();
-  let files = exif.listFiles(root, (f) => h.isAudioFile(f.path));
+  let files = await listAudioFiles(input);
+
+  if (true) {
+    return;
+  }
+
   const fileCount = files.length;
-  d.L(`executeParseTags: ${fileCount} files found in (${h.ht(startMs)})`);
+  d.L(`${cmd}: ${fileCount} files found in ${h.ht(startMs)}`);
   startMs = Date.now();
   // two slow over network
   files = await exif.readAllTags(files);
-  d.L(`executeParseTags: ${fileCount} files parsed in ${h.ht(startMs)}`);
-  try {
-    const jsonName = sanitize(root);
-    await fs.writeJSON(`./data/${jsonName}.json`, files);
-    d.L(`executeParseTags: JSON ./data/${jsonName}.json`);
-  } catch (error) {
-    d.E("executeParseTags:", error);
-  }
-  await saveAudioDBTags(files);
+  d.L(`${cmd}: ${fileCount} files parsed in ${h.ht(startMs)}`);
+  argv.save && (await saveAudioDBTags(files));
 }
 
 async function cmdMoveByLng(argv) {
@@ -476,7 +520,7 @@ async function cmdMoveByLng(argv) {
     d.E(chalk.red(`ERROR! Language list is empty, abort!`));
     return;
   }
-  if (!argv.ignore) {
+  if (argv.unknown) {
     lng.push("xx");
   }
   await executeMoveByLng(root, lng);

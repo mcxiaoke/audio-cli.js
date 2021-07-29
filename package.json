@@ -4,7 +4,7 @@
   "description": "Command line utilities for analyze/split/convert/rename/edit audio files. ",
   "main": "index.js",
   "scripts": {
-    "start": "node audio_cli.js",
+    "start": "node audio_cli.js --",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "bin": {
@@ -43,7 +43,11 @@
     "fs-extra": "^10.0.0",
     "iconv-lite": "^0.6.3",
     "inquirer": "^8.1.2",
-    "log-symbols": "^4.1.0",
+    "lodash": "^4.17.21",
+    "loglevel": "^1.7.1",
+    "loglevel-plugin-prefix": "^0.8.4",
+    "music-metadata": "^7.11.0",
+    "pretty-error": "^3.0.4",
     "printf": "^0.6.1",
     "sanitize-filename": "^1.6.3",
     "sqlite": "^4.0.23",

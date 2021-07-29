@@ -8,66 +8,31 @@ const inquirer = require("inquirer");
 const workerpool = require("workerpool");
 const cpuCount = require("os").cpus().length;
 const h = require("./lib/helper");
-const d = require("./lib/debug");
+const log = require("./lib/debug");
 const un = require("./lib/unicode");
-const exif = require("./lib/exif");
 const { boolean } = require("yargs");
 const sqlite = require("sqlite");
 const sqlite3 = require("sqlite3");
+const metadata = require("music-metadata");
+// debug and logging config
+const prettyError = require("pretty-error").start();
+prettyError.skipNodeFiles();
 
 // https://www.exiftool.org/index.html#supported
 // https://exiftool.org/TagNames/ID3.html
 
-async function listFiles(root, options) {
-  options = options || {};
-  const startMs = Date.now();
-  d.I("listFiles: Root", root, options);
-  // https://www.npmjs.com/package/@nodelib/fs.walk
-  // walk 31245 files in 31 seconds
-  const files = await util.promisify(fsWalk.walk)(
-    root,
-    Object.assign(
-      {
-        stats: true,
-        concurrency: 4 * cpuCount,
-        followSymbolicLinks: false,
-        throwErrorOnBrokenSymbolicLink: false,
-        errorFilter: (error) => error.code == "ENOENT",
-        // entryFilter: (entry) => h.isAudioFile(entry.path),
-      },
-      options || {}
-    )
-  );
-
-  // https://www.npmjs.com/package/readdirp
-  // walk 31245 files in 30 seconds
-  // const files = await readdirp.promise(root, {
-  //   fileFilter: options.fileFilter || options.entryFilter || Boolean,
-  //   type: "files",
-  //   alwaysStat: true,
-  // });
-  for (const [i, f] of files.entries()) {
-    d.D("listFiles: Item", i + 1, h.ps(f.path), h.fz(f.stats.size));
-  }
-  d.I(
-    "listFiles: Result",
-    `total ${files.length} files found in ${h.ht(startMs)}`
-  );
-  return files;
-}
-
-async function listAudioFiles(root) {
-  return listFiles(root, { entryFilter: (entry) => h.isAudioFile(entry.path) });
-}
+//////////////////////////////////////////////////////////////////////
+// COMMAND LINE ARGS PARSE AND SETUP BEGIN
+//////////////////////////////////////////////////////////////////////
 
 const configCli = (argv) => {
-  d.setLevel(argv.verbose);
-  d.D(argv);
+  log.setLevel(argv.verbose);
+  log.debug(argv);
 };
 const yargs = require("yargs/yargs")(process.argv.slice(2))
   .command(
     ["parse <input> [options]", "ps"],
-    "Parse id3 metadata for audio files",
+    "Parse id3 metadata for audio files and save to database",
     (yargs) => {
       return yargs
         .positional("input", {
@@ -81,7 +46,7 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
         });
     },
     (argv) => {
-      cmdParseTags(argv);
+      cmdParse(argv);
     }
   )
   .command(
@@ -100,7 +65,6 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
         });
     },
     (argv) => {
-      d.I(argv);
       cmdCueSplit(argv);
     }
   )
@@ -124,7 +88,6 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
         });
     },
     (argv) => {
-      d.I(argv);
       cmdConvert(argv);
     }
   )
@@ -166,26 +129,246 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
 // this line is required to parse args
 yargs.argv; //==yargs.parse()
 
-async function cmdCueSplit(argv) {
+//////////////////////////////////////////////////////////////////////
+// COMMAND LINE ARGS PARSE AND SETUP END
+//////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////
+// AUDIO CLI COMMON FUNCTIONS BEGIN
+//////////////////////////////////////////////////////////////////////
+
+async function listFiles(root, options) {
+  options = options || {};
+  const startMs = Date.now();
+  log.info("listFiles: Root", root, options);
+  // https://www.npmjs.com/package/@nodelib/fs.walk
+  // walk 31245 files in 31 seconds
+  const files = await util.promisify(fsWalk.walk)(
+    root,
+    Object.assign(
+      {
+        stats: true,
+        concurrency: 4 * cpuCount,
+        followSymbolicLinks: false,
+        throwErrorOnBrokenSymbolicLink: false,
+        errorFilter: (error) => error.code == "ENOENT",
+        // entryFilter: (entry) => h.isAudioFile(entry.path),
+      },
+      options || {}
+    )
+  );
+
+  // https://www.npmjs.com/package/readdirp
+  // walk 31245 files in 30 seconds
+  // const files = await readdirp.promise(root, {
+  //   fileFilter: options.fileFilter || options.entryFilter || Boolean,
+  //   type: "files",
+  //   alwaysStat: true,
+  // });
+  for (const [i, f] of files.entries()) {
+    log.debug("listFiles: Item", i + 1, h.ps(f.path), h.fz(f.stats.size));
+  }
+  log.info(
+    "listFiles: Result",
+    `total ${files.length} files found in ${h.ht(startMs)}`
+  );
+  return files;
+}
+
+async function listAudio(root) {
+  return listFiles(root, { entryFilter: (entry) => h.isAudioFile(entry.path) });
+}
+
+function selectAudioTag(mt) {
+  if (!mt.format.tagTypes || mt.format.tagTypes.length == 0) {
+    return;
+  }
+  for (const type of mt.format.tagTypes) {
+    if (type !== "ID3v1") {
+      return [type, mt.native[type]];
+    }
+  }
+}
+
+async function parseTags(files) {
+  log.info("parseTags", `for ${files.length} files`);
+  const start = Date.now();
+  const results = [];
+  for (const [i, file] of files.entries()) {
+    const f = file.path;
+    let tags;
+    try {
+      const mt = await metadata.parseFile(f, { skipCovers: true });
+
+      if (!mt.format.tagTypes || mt.format.tagTypes.length == 0) {
+        log.warn("parseTags", chalk.yellow("no tags found"), i, f);
+      } else {
+        log.debug("parseTags", i, f, mt.common, mt.format.tagTypes);
+      }
+      tags = mt.common;
+    } catch (error) {
+      log.error("parseTags", i, f, String(error));
+    }
+    f.tags = tags;
+    results.push(f);
+  }
+  const elapsed = Date.now() - start;
+  log.info("parseTags", `${files.length} files parsed in ${elapsed}ms`);
+  return results;
+}
+
+//////////////////////////////////////////////////////////////////////
+// AUDIO CLI COMMON FUNCTIONS END
+//////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////
+// AUDIO TAGS DATABASE METHODS BEGIN
+//////////////////////////////////////////////////////////////////////
+
+async function dbCreateTable(db) {
+  // https://www.npmjs.com/package/sqlite
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS tags (
+      size INTEGER, 
+      filename TEXT NOT NULL, 
+      path TEXT NOT NULL, 
+      tags TEXT NOT NULL, 
+      UNIQUE(path),
+      PRIMARY KEY(path)
+    );`
+  );
+  return db;
+}
+
+async function dbOpenDatabase(dbFile) {
+  const filename = dbFile || "./data/audio.db";
+  log.debug("dbOpenDatabase", filename);
+  const fileDir = path.dirname(filename);
+  if (!(await fs.pathExists(fileDir))) {
+    await fs.mkdirs(fileDir);
+  }
+  sqlite3.verbose();
+  const db = await sqlite.open({
+    filename: filename,
+    driver: sqlite3.Database,
+  });
+  await dbCreateTable(db);
+  return db;
+}
+
+async function dbSaveTagRow(db, f) {
+  if (!(db && f)) {
+    throw new Error("Database and file object is required!");
+  }
+  const ret = await db.run(
+    "INSERT OR REPLACE INTO tags VALUES (?,?,?,?,?,?)",
+    f.size || f.stats.size || 0,
+    path.basename(f.path),
+    f.path,
+    JSON.stringify(f)
+  );
+  log.debug("dbSaveTagRow", `row added for ${ret.lastID} for ${f.path} `);
+  return ret;
+}
+
+async function dbSaveTags(files) {
+  // const dbFile = "./data/audio.db";
+  // if (await fs.pathExists(dbFile)) {
+  //   await fs.move(dbFile, dbFile + "." + Date.now());
+  // }
+  const results = [];
+  const db = await dbOpenDatabase();
+  const dbStartMs = Date.now();
+  db.run("BEGIN TRANSACTION");
+  try {
+    for (const f of files) {
+      results.push(await dbSaveTagRow(db, f));
+    }
+  } catch (error) {
+    d.E(error);
+  }
+  db.run("COMMIT TRANSACTION");
+  await db.close();
+  log.info("dbSaveTags", `Insert ${files.length} rows in ${h.ht(dbStartMs)}`);
+  return results;
+}
+
+async function dbReadTags(root) {
+  const dbStartMs = Date.now();
+  const db = await dbOpenDatabase();
+  const rows = await db.all("SELECT * FROM tags");
+  const files = await Promise.all(
+    rows.map(async (row, i) => {
+      try {
+        log.debug("dbReadTags", "read", i, row.path, row.size);
+        return {
+          path: row.path,
+          size: row.size,
+          tags: JSON.parse(row.tags),
+        };
+      } catch (error) {
+        d.E(error);
+      }
+    })
+  );
+  await db.close();
+  log.info("dbReadTags", `Read ${rows.length} rows in ${h.ht(dbStartMs)}`);
+  return files;
+}
+
+//////////////////////////////////////////////////////////////////////
+// AUDIO TAGS DATABASE METHODS END
+//////////////////////////////////////////////////////////////////////
+
+async function cmdParse(argv) {
+  const input = path.resolve(argv.input);
+  log.debug("cmdParse", input);
+  let stats;
+  try {
+    stats = await fs.stat(input);
+  } catch (error) {
+    yargs.showHelp();
+    log.error("cmdParse", `Invalid Input:`, input);
+    return;
+  }
+  let startMs = Date.now();
+  let files;
+  if (stats.isFile()) {
+    files = [{ path: input }].filter((f) => h.isAudioFile(f.path));
+  } else if (stats.isDirectory()) {
+    files = await listAudio(input);
+  } else {
+    files = [];
+  }
+  const fileCount = files.length;
+  log.show("cmdParse", `${fileCount} files found in ${h.ht(startMs)}`);
+  startMs = Date.now();
+  // maybe very slow over network
+  files = await parseTags(files);
+  log.show("cmdParse", `${fileCount} files parsed in ${h.ht(startMs)}`);
+  argv.save && (await dbSaveTags(files));
+}
+
+async function cmdSplit(argv) {
   const root = path.resolve(argv.source);
   if (!root || !(await fs.pathExists(root))) {
     yargs.showHelp();
-    d.E(chalk.red(`ERROR! Source '${root}' is not exists or not a directory!`));
+    log.error("cmdSplit", `Invalid Input: '${root}'`);
     return;
   }
-  await executeCueSplit(root);
+  await executeSplit(root);
 }
 
-async function executeCueSplit(root) {
-  d.L(`executeCueSplit: ${root}`);
+async function executeSplit(root) {
+  log.info(`executeSplit: ${root}`);
   const startMs = Date.now();
   let files = await listFiles(root, {
     entryFilter: (f) => h.ext(f.path, true) == ".cue",
   });
   for (const f of files) {
-    d.L(`Found CUE: ${h.ps(f.path)}`);
+    log.info(`Found CUE: ${h.ps(f.path)}`);
   }
-  d.L(`Total ${files.length} cue files found in ${h.ht(startMs)}`);
+  log.info(`Total ${files.length} cue files found in ${h.ht(startMs)}`);
   const answer = await inquirer.prompt([
     {
       type: "confirm",
@@ -201,24 +384,23 @@ async function executeCueSplit(root) {
     for (const r of results) {
       if (r.failed && r.failed.length > 0) {
         for (const fd of r.failed) {
-          console.log(chalk.red(`executeCueSplit: ${fd.error} ${fd.file}`));
+          log.warn("executeSplit", `${fd.error} ${fd.file}`);
         }
       } else {
-        d.L(`executeCueSplit: all done for ${h.ps(r.file)}`);
+        log.showGreen("executeSplit", `all done for ${h.ps(r.file)}`);
       }
     }
-    d.L(
-      chalk.green(
-        `executeCueSplit: total ${results.length} audio files splitted by cue sheet.`
-      )
+    log.showGreen(
+      "executeSplit",
+      `total ${results.length} audio files splitted by cue sheet.`
     );
   } else {
-    d.L(chalk.yellowBright("Will do nothing, aborted by user."));
+    log.showYellow("Will do nothing, aborted by user.");
   }
 }
 
 async function splitAllCue(files) {
-  d.L(`splitAllCue: Adding ${files.length} tasks`);
+  log.info(`splitAllCue: Adding ${files.length} tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
     maxWorkers: cpuCount - 1,
     workerType: "process",
@@ -230,7 +412,7 @@ async function splitAllCue(files) {
     })
   );
   await pool.terminate();
-  d.L(
+  log.info(
     `splitAllCue: ${results.length} cue files splitted to tracks in ${h.ht(
       startMs
     )}.`
@@ -242,7 +424,7 @@ async function cmdConvert(argv) {
   const root = path.resolve(argv.source);
   if (!root || !fs.pathExistsSync(root)) {
     yargs.showHelp();
-    d.E(chalk.red(`ERROR! Source '${root}' is not exists or not a directory!`));
+    log.error("cmdConvert", `Invalid Input: '${root}'`);
     return;
   }
   await executeConvert(root);
@@ -263,21 +445,21 @@ async function checkFiles(files) {
         return false;
       }
       if (h.ext(f, true) == ".m4a") {
-        d.D(chalk.gray(`SkipAAC (${index}): ${h.ps(f)}`));
+        log.debug(chalk.gray(`SkipAAC (${index}): ${h.ps(f)}`));
         return false;
       }
       const aacName = h.getAACFileName(f);
       const p1 = path.join(path.dirname(f), "output", aacName);
       if (await fs.pathExists(p1)) {
-        d.D(chalk.gray(`SkipExists (${i}): ${h.ps(p1)}`));
+        log.debug(`SkipExists (${i}): ${h.ps(p1)}`);
         return false;
       }
       const p2 = path.join(path.dirname(f), aacName);
       if (await fs.pathExists(p2)) {
-        d.D(chalk.gray(`SkipExists (${index}): ${h.ps(p2)}`));
+        log.debug(`SkipExists (${index}): ${h.ps(p2)}`);
         return false;
       }
-      d.I(chalk.green(`Prepared (${index}): `) + `${h.ps(f)}`);
+      log.info(`Prepared (${index}): ${h.ps(f)}`);
       return true;
     })
   );
@@ -285,7 +467,7 @@ async function checkFiles(files) {
 }
 
 async function convertAllToAAC(files) {
-  d.L(`convertAllToAAC: Adding ${files.length} tasks`);
+  log.info(`convertAllToAAC: Adding ${files.length} tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
     maxWorkers: cpuCount - 1,
     workerType: "process",
@@ -298,7 +480,7 @@ async function convertAllToAAC(files) {
     })
   );
   await pool.terminate();
-  d.L(`Result: ${results.length} files converted in ${h.ht(startMs)}.`);
+  log.info(`Result: ${results.length} files converted in ${h.ht(startMs)}.`);
   return results;
 }
 
@@ -319,7 +501,7 @@ function appendAudioBitRate(f) {
     bitRate = parseInt(m && m[0]) || 0;
   }
   if (bitRate < 192) {
-    d.D(
+    log.debug(
       `appendAudioBitRate: ${bitRate} ${path.basename(f.path)} ${
         f.tags.MIMEType
       } ${f.tags.AudioBitrate}`
@@ -330,14 +512,14 @@ function appendAudioBitRate(f) {
 }
 
 async function executeConvert(root) {
-  d.L(`executeConvert: ${root}`);
+  log.info(`executeConvert: ${root}`);
   const startMs = Date.now();
   // list all files in dir recursilly
   // keep only non-m4a audio files
   // todo add check to ensure is audio file
   const taskFiles = await checkFiles(await listAudioFiles(root));
   const taskPaths = taskFiles.map((f) => f.path);
-  d.L(
+  log.info(
     `executeConvert: ${taskPaths.length} audio files found in ${h.ht(startMs)}`
   );
   // caution: slow on network drives
@@ -346,11 +528,11 @@ async function executeConvert(root) {
   // saveAudioDBTags(files);
   // use cached file with tags database
   if (!taskFiles || taskFiles.length == 0) {
-    d.L(chalk.green("Nothing to do, exit now."));
+    log.warn("Nothing to do, exit now.");
     return;
   }
   let files = await readAudioDBTags(root);
-  d.L(`Total ${files.length} files parsed in ${h.ht(startMs)}`);
+  log.info(`Total ${files.length} files parsed in ${h.ht(startMs)}`);
   files = files.filter((f) => taskPaths.includes(f.path));
   if (files.length == 0) {
     // new files not found in db
@@ -359,18 +541,18 @@ async function executeConvert(root) {
     await saveAudioDBTags(files);
   }
   files = files.map((f) => appendAudioBitRate(f));
-  d.L(`Total ${files.length} files after filterd in ${h.ht(startMs)}`);
+  log.info(`Total ${files.length} files after filterd in ${h.ht(startMs)}`);
   const filesCount = files.length;
   const skipCount = filesCount - files.length;
   if (skipCount > 0) {
-    d.L(`Total ${skipCount} audio files are skipped`);
+    log.info(`Total ${skipCount} audio files are skipped`);
   }
-  d.L(`Input: ${root}`);
+  log.info(`Input: ${root}`);
   if (files.length == 0) {
-    d.L(chalk.green("Nothing to do, exit now."));
+    log.info(chalk.green("Nothing to do, exit now."));
     return;
   }
-  d.L(`Total ${files.length} audio files ready to convert`);
+  log.info(`Total ${files.length} audio files ready to convert`);
   const answer = await inquirer.prompt([
     {
       type: "confirm",
@@ -381,143 +563,24 @@ async function executeConvert(root) {
   ]);
   if (answer.yes) {
     const results = await convertAllToAAC(files);
-    d.L(chalk.green(`There are ${results.length} audio files converted.`));
+    log.info(chalk.green(`There are ${results.length} audio files converted.`));
   } else {
-    d.L(chalk.yellowBright("Will do nothing, aborted by user."));
+    log.info(chalk.yellowBright("Will do nothing, aborted by user."));
   }
-}
-
-async function createAudioTable(db) {
-  // https://www.npmjs.com/package/sqlite
-  await db.exec(
-    `CREATE TABLE IF NOT EXISTS tags (
-      size INTEGER, 
-      filename TEXT NOT NULL, 
-      path TEXT NOT NULL, 
-      title TEXT NOT NULL, 
-      artist TEXT NOT NULL, 
-      tags TEXT NOT NULL, 
-      UNIQUE(path),
-      PRIMARY KEY(path)
-    );`
-  );
-  return db;
-}
-
-async function openAudioDB(dbFile) {
-  const filename = dbFile || "./data/audio.db";
-  const fileDir = path.dirname(filename);
-  if (!(await fs.pathExists(fileDir))) {
-    await fs.mkdirs(fileDir);
-  }
-  sqlite3.verbose();
-  const db = await sqlite.open({
-    filename: filename,
-    driver: sqlite3.Database,
-  });
-  await createAudioTable(db);
-  return db;
-}
-
-async function saveAudioDBRow(db, f) {
-  if (!(db && f)) {
-    throw new Error("Database and file object is required!");
-  }
-  const ret = await db.run(
-    "INSERT OR REPLACE INTO tags VALUES (?,?,?,?,?,?)",
-    f.size || f.stats.size || 0,
-    path.basename(f.path),
-    f.path,
-    f.tags.Title || "",
-    f.tags.Artist || "",
-    JSON.stringify(f.tags)
-  );
-  d.D(`saveAudioDBRow: row ${ret.lastID} for ${f.path} `);
-}
-
-async function saveAudioDBTags(files) {
-  // const dbFile = "./data/audio.db";
-  // if (await fs.pathExists(dbFile)) {
-  //   await fs.move(dbFile, dbFile + "." + Date.now());
-  // }
-  const db = await openAudioDB();
-  const dbStartMs = Date.now();
-  db.run("BEGIN TRANSACTION");
-  try {
-    for (const f of files) {
-      await saveAudioDBRow(db, f);
-    }
-  } catch (error) {
-    d.E(error);
-  }
-  db.run("COMMIT TRANSACTION");
-  await db.close();
-  d.L(`saveAudioDBTags: ${files.length} rows added in ${h.ht(dbStartMs)}`);
-}
-
-async function readAudioDBTags(root) {
-  const dbStartMs = Date.now();
-  const db = await openAudioDB();
-  const rows = await db.all("SELECT * FROM tags");
-  const files = await Promise.all(
-    rows.map(async (row, i) => {
-      try {
-        d.D(`Read row ${i} ${row.path} ${row.size}`);
-        return {
-          path: row.path,
-          size: row.size,
-          tags: JSON.parse(row.tags),
-        };
-      } catch (error) {
-        d.E(error);
-      }
-    })
-  );
-  await db.close();
-  d.L(`Database read ${rows.length} rows in ${h.ht(dbStartMs)}`);
-  return files;
-}
-
-async function cmdParseTags(argv) {
-  const cmd = argv._[0];
-  const input = path.resolve(argv.input);
-  let stats;
-  try {
-    stats = await fs.stat(input);
-  } catch (error) {
-    yargs.showHelp();
-    d.E(chalk.red(`${cmd}: Invalid "${input}"`));
-    return;
-  }
-  d.L(cmd, input);
-  let startMs = Date.now();
-  let files = await listAudioFiles(input);
-
-  if (true) {
-    return;
-  }
-
-  const fileCount = files.length;
-  d.L(`${cmd}: ${fileCount} files found in ${h.ht(startMs)}`);
-  startMs = Date.now();
-  // two slow over network
-  files = await exif.readAllTags(files);
-  d.L(`${cmd}: ${fileCount} files parsed in ${h.ht(startMs)}`);
-  argv.save && (await saveAudioDBTags(files));
 }
 
 async function cmdMoveByLng(argv) {
-  d.I(`cmdMoveByLng:`, argv);
-  const root = path.resolve(argv.source);
+  log.debug(`cmdMoveByLng:`, argv);
+  const root = path.resolve(argv.input);
   const lng = argv.lng || [];
   if (!root || !fs.pathExistsSync(root)) {
     yargs.showHelp();
-    d.E(chalk.red(`ERROR! Source '${root}' is not exists or not a directory!`));
+    log.error("cmdMoveByLng", `Invalid Input: '${root}'`);
     return;
   }
   if (lng.length == 0) {
     yargs.showHelp();
-    d.E(chalk.red(`ERROR! Language list is empty, abort!`));
+    log.error("cmdMoveByLng", `Language list is empty, abort!`);
     return;
   }
   if (argv.unknown) {
@@ -535,17 +598,17 @@ async function executeMoveByLng(root, lng = []) {
       output: path.join(path.dirname(root), `${path.basename(root)}_${x}`),
     };
   });
-  d.L(`executeMoveByLng:`, root);
-  d.I(outputs);
+  log.info(`executeMoveByLng:`, root);
+  log.info(outputs);
   const startMs = Date.now();
   let files = exif.listFiles(root);
   files = files.filter((f) => h.isAudioFile(f.path));
-  d.L(`executeMoveByLng: files count`, files.length);
+  log.info(`executeMoveByLng: files count`, files.length);
   files = await exif.readAllTags(files);
   files = files.filter((f) => {
     return f.tags && f.tags.Title && f.tags.Artist;
   });
-  d.L(`executeMoveByLng: tags count`, files.length);
+  log.info(`executeMoveByLng: tags count`, files.length);
   // let files = await readTagsFromDatabase(root);
   const fileCount = files.length;
   files.forEach((f, i) => {
@@ -553,21 +616,21 @@ async function executeMoveByLng(root, lng = []) {
     const name = path.basename(f.path);
     if (t.Title && t.Artist) {
       if (un.strHasHiraKana(name + t.Title + t.Artist)) {
-        d.I(chalk.yellow(`JA: ${name} ${t.Artist}-${t.Title}`));
+        log.info(chalk.yellow(`JA: ${name} ${t.Artist}-${t.Title}`));
         outputs["ja"] &&
           outputs["ja"].input.push([
             f.path,
             path.join(outputs["ja"].output, name),
           ]);
       } else if (un.strHasHangul(name + t.Title + t.Artist)) {
-        d.I(chalk.cyan(`KR: ${name} ${t.Artist}-${t.Title}`));
+        log.info(chalk.cyan(`KR: ${name} ${t.Artist}-${t.Title}`));
         outputs["kr"] &&
           outputs["kr"].input.push([
             f.path,
             path.join(outputs["kr"].output, name),
           ]);
       } else if (un.strHasHanyu(name + t.Title + t.Artist)) {
-        d.I(chalk.green(`CN: ${name} ${t.Artist}-${t.Title}`));
+        log.info(chalk.green(`CN: ${name} ${t.Artist}-${t.Title}`));
         outputs["cn"] &&
           outputs["cn"].input.push([
             f.path,
@@ -575,14 +638,14 @@ async function executeMoveByLng(root, lng = []) {
           ]);
       } else if (un.strOnlyASCII(name + t.Title + t.Artist)) {
         // only ascii = english
-        d.I(chalk.gray(`EN: ${name} ${t.Artist}-${t.Title}`));
+        log.info(chalk.gray(`EN: ${name} ${t.Artist}-${t.Title}`));
         outputs["en"] &&
           outputs["en"].input.push([
             f.path,
             path.join(outputs["en"].output, name),
           ]);
       } else {
-        d.I(chalk.gray(`MISC: ${name} ${t.Artist}-${t.Title}`));
+        log.info(chalk.gray(`MISC: ${name} ${t.Artist}-${t.Title}`));
         outputs["xx"] &&
           outputs["xx"].input.push([
             f.path,
@@ -590,15 +653,15 @@ async function executeMoveByLng(root, lng = []) {
           ]);
       }
     } else {
-      d.W(`Invalid: ${path.basename(f.path)}`);
+      log.warn(`Invalid: ${path.basename(f.path)}`);
     }
   });
 
-  d.L(`Input: ${root} lng=${lng}`);
+  log.info(`Input: ${root} lng=${lng}`);
   let taskCount = 0;
   for (const [k, v] of Object.entries(outputs)) {
     taskCount += v.input.length;
-    d.L(
+    log.info(
       `Prepared: [${v.id.toUpperCase()}] ${
         v.input.length
       } files will be moved to "${v.output}"`
@@ -606,7 +669,7 @@ async function executeMoveByLng(root, lng = []) {
   }
 
   if (taskCount == 0) {
-    d.L(chalk.green(`No files need to be processed, abort.`));
+    log.warn(`No files need to be processed, abort.`);
     return;
   }
 
@@ -624,26 +687,26 @@ async function executeMoveByLng(root, lng = []) {
       await fs.mkdir(dout);
     }
     async function ensureMove(src, dst) {
-      d.L(`ensureMove: ${h.ps(src)} => ${h.ps(dst)}`);
+      log.debug(`ensureMove: ${h.ps(src)} => ${h.ps(dst)}`);
       if (src == dst) {
-        // d.W(`Skip:${src}`);
+        log.debug(`Skip:${src}`);
         return;
       }
       if (await fs.pathExists(src)) {
-        // d.W(`NotExists:${src}`);
+        log.debug(`NotExists:${src}`);
         return;
       }
       try {
         if (await fs.pathExists(dst)) {
-          // d.W(`Duplicate:${src}`);
+          log.debug(`Duplicate:${src}`);
           await fs.move(src, path.join(dout, path.basename(src)));
         } else {
-          // d.D(`Moving to ${dst}`);
+          log.debug(`Moving to ${dst}`);
           await fs.move(src, dst);
-          d.I(`Moved to ${dst}`);
+          log.info(`Moved to ${dst}`);
         }
       } catch (error) {
-        d.E(`ensureMove:${error}`);
+        log.error(error);
       }
     }
     // https://zellwk.com/blog/async-await-in-loops/
@@ -683,23 +746,19 @@ async function executeMoveByLng(root, lng = []) {
           return dst;
         })
       );
-      d.L(
-        chalk.magenta(
-          `Progress: ${v.results.length} ${v.id} files moved to ${v.output}`
-        )
+      log.showMagenta(
+        `Progress: ${v.results.length} ${v.id} files moved to ${v.output}`
       );
     }
 
     for (const [k, v] of Object.entries(outputs)) {
       v.results &&
-        d.L(
-          chalk.green(
-            `Result: ${v.results.length} ${v.id} files moved to "${v.output}"`
-          )
+        log.showGreen(
+          `Result: ${v.results.length} ${v.id} files moved to "${v.output}"`
         );
     }
-    d.L(chalk.green(`Total ${fileCount} files processed in ${h.ht(startMs)}`));
+    log.showGreen(`Total ${fileCount} files processed in ${h.ht(startMs)}`);
   } else {
-    d.L(chalk.yellowBright("Will do nothing, aborted by user."));
+    log.warn("Will do nothing, aborted by user.");
   }
 }

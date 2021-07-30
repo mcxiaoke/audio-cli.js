@@ -102,21 +102,23 @@ function getFFmpegArgs(track) {
 }
 
 // convert one ape/wav/flac file with cue to multi aac tracks
-function splitTracks(file, i, logLevel) {
-  logLevel && log.setLevel(logLevel);
+function splitTracks(file, i, options) {
+  log.debug(`Processing(${i}):`, file.path, options);
+  options = options || {};
+  options.logLevel && log.setLevel(options.logLevel);
   // ffmpeg -ss 00:00:00.00 -to 00:04:34.35 -i .\女生宿舍.ape -map a:0 -c:a libfdk_aac -b:a 320k -metadata title="恋人未满" -metadata artist="S.H.E" -metadata album="女生宿舍" track01.m4a
   const fileSrc = path.resolve(file.path);
   const audioName = path.basename(file.audio);
-  log.debug("splitTracks input:", i, file, logLevel || -1);
+
   let tracks;
   try {
     tracks = cue.parseAudioTracks(file);
   } catch (error) {
     tracks = null;
-    log.error("splitTracks", i, error, fileSrc);
+    log.error(`splitTracks(${i}):`, i, error, fileSrc);
   }
   if (!tracks || tracks.length == 0) {
-    log.warn("splitTracks", i, "no tracks found", fileSrc);
+    log.warn("splitTracks(${i}):", "no tracks found", fileSrc);
     return {
       file: file,
       skipped: [],
@@ -168,13 +170,13 @@ function splitTracks(file, i, logLevel) {
     );
   if (failed.length == 0) {
     log.showGreen(
-      "splitTracks Result: All Tracks OK",
+      `splitTracks(${i}): All Tracks OK`,
       file.audio,
       path.basename(file.path)
     );
   } else {
     log.warn(
-      "splitTracks Result: Some Tracks OK",
+      `splitTracks(${i}): Some Tracks OK`,
       `${failed.length} failed`,
       file.audio,
       path.basename(file.path)
@@ -189,15 +191,17 @@ function splitTracks(file, i, logLevel) {
 }
 
 // convert one mp3/ape/wav/flac to single aac file
-function toAACFile(file, index) {
+function convertAudio(file, i, options) {
+  log.debug(`Processing(${i}):`, file.path, options);
+  options = options || {};
+  options.logLevel && log.setLevel(options.logLevel);
   // ls *.mp3 | parallel ffmpeg -n -loglevel repeat+level+warning -i "{}" -map a:0 -c:a libfdk_aac -b:a 192k output/"{.}".m4a -hide_banner
-  d.D(`toAACFile: processing ${index} ${file.path}`);
   const fileSrc = path.resolve(file.path);
   const [dir, base, ext] = h.pathSplit(fileSrc);
   const dstDir = dir;
   const fileDst = path.join(dstDir, `${base}.m4a`);
   if (fs.pathExistsSync(fileDst)) {
-    d.W(`SkipExists: ${h.ps(fileDst)} (${index})`);
+    log.warn(`SkipExists(${i}):`, fileDst);
     return { status: 0, output: "", file: fileSrc };
   }
   let args = "-n -loglevel repeat+level+info -i".split(" ");
@@ -210,14 +214,12 @@ function toAACFile(file, index) {
   }
   args.push(fileDst);
   args.push("-hide_banner");
-  d.I("ffmpeg", args);
-  // console.log(`Converting: ${fileName}`);
+  log.debug(i, "ffmpeg", args);
   fs.ensureDirSync(dstDir);
-  // const result = spawnSync("ffmpeg", args);
-  d.L(chalk.gray(`Converting (${index}): [${file.bitRate}k] ${h.ps(fileSrc)}`));
+  log.show(`Converting(${i}):`, fileSrc, file.bitRate);
   const result = executeCommand("ffmpeg", args);
   if (result.status == 0) {
-    d.L(chalk.green(`Converted OK (${index}): ${h.ps(fileDst)}`));
+    log.showGreen(`Converted(${i}):`, fileDst);
     //caution: delete orignal audio file
     // try {
     //   fs.rmSync(fileSrc);
@@ -228,7 +230,7 @@ function toAACFile(file, index) {
     //   );
     // }
   } else {
-    d.W(chalk.yellow(`ERROR (${index}): ${h.ps(fileSrc)} ${result.output}`));
+    d.error(`Error(${i}):`, fileSrc, result.output);
   }
   return result;
 }
@@ -238,6 +240,6 @@ function toAACFile(file, index) {
 workerpool.worker({
   cmdExifTool: cmdExifTool,
   cmdFFProbe: cmdFFProbe,
-  toAACFile: toAACFile,
+  convertAudio: convertAudio,
   splitTracks: splitTracks,
 });

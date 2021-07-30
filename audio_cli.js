@@ -95,7 +95,7 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
   )
   .command(
     ["move <input> [options]", "mv"],
-    "Organize audio files by language in input dir",
+    "Move audio files by language in input dir",
     (yargs) => {
       yargs
         .positional("input", {
@@ -107,16 +107,16 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           alias: "l",
           type: "array",
           default: [],
-          describe: "Audio language that should be moved (cn,ja,kr,en)",
+          describe: "Audio language that should be move (cn,ja,kr,en)",
         })
         .option("unknown", {
           alias: "u",
           type: boolean,
-          describe: "Move unidentified audio files to xx folder",
+          describe: "Move unclassified audio files to xx folder",
         });
     },
     (argv) => {
-      cmdMoveByLng(argv);
+      cmdMove(argv);
     }
   )
   .count("verbose")
@@ -193,7 +193,7 @@ function selectAudioTag(mt) {
 }
 
 async function parseTags(files) {
-  log.info("parseTags", `for ${files.length} files`);
+  log.info("parseTags", `processing ${files.length} files`);
   const start = Date.now();
   const results = [];
   for (const [i, f] of files.entries()) {
@@ -210,17 +210,18 @@ async function parseTags(files) {
           mt.format.tagTypes
         );
       } else {
-        log.warn("parseTags", i, "no tags found", f.path);
+        log.info("parseTags", i, "no tags found", f.path);
       }
     } catch (error) {
       log.error("parseTags", i, "no tags found", f.path, error.message);
-      if (log.getLevel() <= 1) {
+      if (log.getLevel() >= 2) {
         console.error(i, error, f.path);
       }
     }
 
     f.tags = mt && mt.common;
-    f.tags && results.push(f);
+    f.format = mt && mt.format;
+    f.format && results.push(f);
   }
   const elapsed = Date.now() - start;
   log.info(
@@ -245,6 +246,7 @@ async function dbCreateTable(db) {
       size INTEGER, 
       filename TEXT NOT NULL, 
       path TEXT NOT NULL, 
+      format TEXT NOT NULL,
       tags TEXT NOT NULL, 
       UNIQUE(path),
       PRIMARY KEY(path)
@@ -274,10 +276,11 @@ async function dbSaveTagRow(db, f) {
     throw new Error("Database and file object is required!");
   }
   const ret = await db.run(
-    "INSERT OR REPLACE INTO tags VALUES (?,?,?,?)",
+    "INSERT OR REPLACE INTO tags VALUES (?,?,?,?,?)",
     f.size || f.stats.size || 0,
     path.basename(f.path),
     f.path,
+    JSON.stringify(f.format),
     JSON.stringify(f.tags)
   );
   return ret;
@@ -295,9 +298,13 @@ async function dbSaveTags(files) {
   db.run("BEGIN");
   try {
     for (const [i, f] of files.entries()) {
-      const ret = await dbSaveTagRow(db, f);
-      results.push(ret);
-      log.debug("dbSaveTags", i, `row-${ret.lastID} added ${f.path} `);
+      if (f.format && f.tags) {
+        const ret = await dbSaveTagRow(db, f);
+        results.push(ret);
+        log.debug("dbSaveTags", i, `row-${ret.lastID} added ${f.path} `);
+      } else {
+        log.debug("dbSaveTags", i, `skip invalid ${f.path} `);
+      }
     }
   } catch (error) {
     db.run("ROLLBACK");
@@ -310,6 +317,7 @@ async function dbSaveTags(files) {
 }
 
 async function dbReadTags(root) {
+  log.info("dbReadTags input:", root);
   const dbStartMs = Date.now();
   const db = await dbOpenDatabase();
   const rows = await db.all("SELECT * FROM tags");
@@ -320,6 +328,7 @@ async function dbReadTags(root) {
         return {
           path: row.path,
           size: row.size,
+          format: JSON.parse(row.format),
           tags: JSON.parse(row.tags),
         };
       } catch (error) {
@@ -435,9 +444,10 @@ async function splitAllCue(files) {
     workerType: "process",
   });
   const startMs = Date.now();
+  const options = { logLevel: log.getLevel() };
   const results = await Promise.all(
     files.map(async (f, i) => {
-      return await pool.exec("splitTracks", [f, i + 1, log.getLevel()]);
+      return await pool.exec("splitTracks", [f, i + 1, options]);
     })
   );
   await pool.terminate();
@@ -449,175 +459,176 @@ async function splitAllCue(files) {
 }
 
 async function cmdConvert(argv) {
-  const root = path.resolve(argv.source);
+  const root = path.resolve(argv.input);
+  log.show("cmdConvert input:", root);
   if (!root || !fs.pathExistsSync(root)) {
     yargs.showHelp();
     log.error("cmdConvert", `Invalid Input: '${root}'`);
     return;
   }
-  await executeConvert(root);
-}
 
-async function checkFiles(files) {
-  const results = await Promise.all(
-    // true means keep
-    // false mean skip
-    files.map(async (file, i) => {
-      const f = file.path;
-      const index = i + 1;
-      // if (!(await fs.pathExists(f))) {
-      //   d.I(`SkipNotFound (${index}) ${h.ps(f)}`);
-      //   return false;
-      // }
-      if (!h.isAudioFile(f)) {
-        return false;
-      }
-      if (h.ext(f, true) == ".m4a") {
-        log.debug(chalk.gray(`SkipAAC (${index}): ${h.ps(f)}`));
-        return false;
-      }
-      const aacName = h.getAACFileName(f);
-      const p1 = path.join(path.dirname(f), "output", aacName);
-      if (await fs.pathExists(p1)) {
-        log.debug(`SkipExists (${i}): ${h.ps(p1)}`);
-        return false;
-      }
-      const p2 = path.join(path.dirname(f), aacName);
-      if (await fs.pathExists(p2)) {
-        log.debug(`SkipExists (${index}): ${h.ps(p2)}`);
-        return false;
-      }
-      log.info(`Prepared (${index}): ${h.ps(f)}`);
-      return true;
-    })
-  );
-  return files.filter((_v, i) => results[i]);
-}
-
-async function convertAllToAAC(files) {
-  log.info(`convertAllToAAC: Adding ${files.length} tasks`);
-  const pool = workerpool.pool(__dirname + "/audio_workers.js", {
-    maxWorkers: cpuCount - 1,
-    workerType: "process",
-  });
-  const startMs = Date.now();
-  const results = await Promise.all(
-    files.map(async (f, i) => {
-      const result = await pool.exec("toAACFile", [f, i + 1]);
-      return result;
-    })
-  );
-  await pool.terminate();
-  log.info(`Result: ${results.length} files converted in ${h.ht(startMs)}.`);
-  return results;
-}
-
-function appendAudioBitRate(f) {
-  if (h.isLoselessAudio(f.path)) {
-    f.bitRate = 1000;
-    f.loseless = true;
-    return f;
-  }
-  const bitRateTag = f.tags && f.tags.AudioBitrate;
-  if (!bitRateTag) {
-    return f;
-  }
-  const r = /(\d+)\.?\d*/;
-  let bitRate = parseInt(bitRateTag);
-  if (!bitRate) {
-    const m = r.exec(bitRateTag);
-    bitRate = parseInt(m && m[0]) || 0;
-  }
-  if (bitRate < 192) {
-    log.debug(
-      `appendAudioBitRate: ${bitRate} ${path.basename(f.path)} ${
-        f.tags.MIMEType
-      } ${f.tags.AudioBitrate}`
-    );
-  }
-  f.bitRate = bitRate;
-  return f;
-}
-
-async function executeConvert(root) {
-  log.info(`executeConvert: ${root}`);
   const startMs = Date.now();
   // list all files in dir recursilly
   // keep only non-m4a audio files
   // todo add check to ensure is audio file
-  const taskFiles = await checkFiles(await listAudioFiles(root));
-  const taskPaths = taskFiles.map((f) => f.path);
-  log.info(
-    `executeConvert: ${taskPaths.length} audio files found in ${h.ht(startMs)}`
+  let files = await listAudio(root);
+  const fileCount = files.length;
+  const filePaths = files.map((f) => f.path);
+  log.show(
+    "cmdConvert",
+    `found ${files.length} audio files in ${root} ${h.ht(startMs)}`
   );
   // caution: slow on network drives
   // files = await exif.readAllTags(files);
   // files = files.filter((f) => h.isAudioFile(f.path));
   // saveAudioDBTags(files);
   // use cached file with tags database
-  if (!taskFiles || taskFiles.length == 0) {
+  if (!files || files.length == 0) {
+    log.warn("cmdConvert", "Nothing to do, exit now.");
+    return;
+  }
+  // const dbFiles = await dbReadTags(root);
+  const dbFiles = [];
+  log.info(
+    "cmdConvert",
+    `load ${dbFiles.length} entries from database ${h.ht(startMs)}`
+  );
+  const taggedFiles = dbFiles.filter((f) => filePaths.includes(f.path));
+  if (taggedFiles.length < files.length) {
+    // some files not found in db
+    // parse exif tags and save to db
+    log.warn(
+      "cmdConvert",
+      `${
+        fileCount - taggedFiles.length
+      } files have no cached tags, need to parse file to read tags`
+    );
+    files = await parseTags(files);
+    await dbSaveTags(files);
+  } else {
+    log.warn(
+      "cmdConvert",
+      "All files have cached tags in database, skip parse file"
+    );
+    files = taggedFiles;
+  }
+
+  files = await checkFiles(files);
+
+  log.info(
+    "cmdConvert",
+    `Prepared ${files.length} valid audio files in ${h.ht(startMs)}`
+  );
+  const skipCount = fileCount - files.length;
+  if (skipCount > 0) {
+    log.info("cmdConvert", `after check ${skipCount} audio files are skipped`);
+  }
+  if (files.length == 0) {
     log.warn("Nothing to do, exit now.");
     return;
   }
-  let files = await readAudioDBTags(root);
-  log.info(`Total ${files.length} files parsed in ${h.ht(startMs)}`);
-  files = files.filter((f) => taskPaths.includes(f.path));
-  if (files.length == 0) {
-    // new files not found in db
-    // parse exif tags and save to db
-    files = await exif.readAllTags(taskFiles);
-    await saveAudioDBTags(files);
-  }
-  files = files.map((f) => appendAudioBitRate(f));
-  log.info(`Total ${files.length} files after filterd in ${h.ht(startMs)}`);
-  const filesCount = files.length;
-  const skipCount = filesCount - files.length;
-  if (skipCount > 0) {
-    log.info(`Total ${skipCount} audio files are skipped`);
-  }
-  log.info(`Input: ${root}`);
-  if (files.length == 0) {
-    log.info(chalk.green("Nothing to do, exit now."));
-    return;
-  }
-  log.info(`Total ${files.length} audio files ready to convert`);
+  log.show(
+    "cmdConvert",
+    `There are ${files.length} audio files ready to convert`
+  );
   const answer = await inquirer.prompt([
     {
       type: "confirm",
       name: "yes",
       default: false,
-      message: chalk.bold.red(`Are you sure to convert ${files.length} files?`),
+      message: chalk.bold.red(
+        `Are you sure to convert ${files.length} files to AAC format?`
+      ),
     },
   ]);
   if (answer.yes) {
-    const results = await convertAllToAAC(files);
-    log.info(chalk.green(`There are ${results.length} audio files converted.`));
+    const results = await convertAll(files);
+    log.showGreen(
+      "cmdConvert",
+      `All ${results.length} audio files are converted to AAC format.`
+    );
   } else {
-    log.info(chalk.yellowBright("Will do nothing, aborted by user."));
+    log.showYellow("cmdConvert", "Will do nothing, aborted by user.");
   }
 }
 
-async function cmdMoveByLng(argv) {
-  log.debug(`cmdMoveByLng:`, argv);
+async function checkFiles(files) {
+  log.info("checkFiles", `before, files count:`, files.length);
+  const results = await Promise.all(
+    // true means keep
+    // false mean skip
+    files.map(async (f, i) => {
+      const index = i + 1;
+      const [dir, base, ext] = h.pathSplit(f.path);
+      if (ext && ext.toLowerCase() == ".m4a") {
+        log.info("checkFiles", `SkipAAC (${index}): ${h.ps(f.path)}`, index);
+        return false;
+      }
+      const cuefile = path.join(dir, `${base}.cue`);
+      if (await fs.pathExists(cuefile)) {
+        log.warn(
+          "checkFiles",
+          `SkipCUE (${index}) cue file found for ${f.path}`
+        );
+        return false;
+      }
+      if (h.isLosslessAudio(f.path) || f.format.lossless) {
+        f.bitRate = 1000;
+        f.lossless = true;
+      } else {
+        f.bitRate = (f.format && f.format.bitrate) / 1000;
+        f.lossless = false;
+      }
+      log.info("checkFiles", `OK (${index}): ${h.ps(f.path)}`);
+      return true;
+    })
+  );
+  files = files.filter((_v, i) => results[i]);
+  log.info("checkFiles", `after, files count:`, files.length);
+  return files;
+}
+
+async function convertAll(files) {
+  log.info("convertAll", `Adding ${files.length} converting tasks`);
+  const pool = workerpool.pool(__dirname + "/audio_workers.js", {
+    maxWorkers: cpuCount - 1,
+    workerType: "process",
+  });
+  log.debug("convertAll", pool);
+  const startMs = Date.now();
+  const options = { logLevel: log.getLevel() };
+  const results = await Promise.all(
+    files.map(async (f, i) => {
+      const result = await pool.exec("convertAudio", [f, i + 1, options]);
+      return result;
+    })
+  );
+  await pool.terminate();
+  log.info(
+    "convertAll",
+    `Result: ${results.length} files converted in ${h.ht(startMs)}.`
+  );
+  return results;
+}
+
+async function cmdMove(argv) {
+  log.debug(`cmdMove:`, argv);
   const root = path.resolve(argv.input);
   const lng = argv.lng || [];
-  if (!root || !fs.pathExistsSync(root)) {
+  if (!root || !(await fs.pathExists(root))) {
+    log.error("cmdMove", `Invalid Input: '${root}'`);
     yargs.showHelp();
-    log.error("cmdMoveByLng", `Invalid Input: '${root}'`);
     return;
   }
   if (lng.length == 0) {
+    log.error("cmdMove", `Language list is empty, abort!`);
     yargs.showHelp();
-    log.error("cmdMoveByLng", `Language list is empty, abort!`);
+
     return;
   }
   if (argv.unknown) {
     lng.push("xx");
   }
-  await executeMoveByLng(root, lng);
-}
-
-async function executeMoveByLng(root, lng = []) {
   let outputs = {};
   lng.forEach((x) => {
     outputs[x] = {
@@ -626,54 +637,52 @@ async function executeMoveByLng(root, lng = []) {
       output: path.join(path.dirname(root), `${path.basename(root)}_${x}`),
     };
   });
-  log.info(`executeMoveByLng:`, root);
-  log.info(outputs);
+  log.debug("cmdMove", outputs);
   const startMs = Date.now();
-  let files = exif.listFiles(root);
-  files = files.filter((f) => h.isAudioFile(f.path));
-  log.info(`executeMoveByLng: files count`, files.length);
-  files = await exif.readAllTags(files);
-  files = files.filter((f) => {
-    return f.tags && f.tags.Title && f.tags.Artist;
-  });
-  log.info(`executeMoveByLng: tags count`, files.length);
+  let files = await listAudio(root);
+  log.show(`cmdMove: files count`, files.length);
+  files = await parseTags(files);
+  files = files.filter((f) => f.format && f.tags);
+  log.show(`cmdMove: ${files.length} files have valid tags`);
   // let files = await readTagsFromDatabase(root);
   const fileCount = files.length;
   files.forEach((f, i) => {
     const t = f.tags;
+    const title = t.title;
+    const artist = t.artist;
     const name = path.basename(f.path);
-    if (t.Title && t.Artist) {
-      if (un.strHasHiraKana(name + t.Title + t.Artist)) {
-        log.info(chalk.yellow(`JA: ${name} ${t.Artist}-${t.Title}`));
+    if (title && artist) {
+      if (un.strHasHiraKana(name + title + artist)) {
+        log.info(chalk.yellow(`JA: ${name} ${artist}-${title}`));
         outputs["ja"] &&
           outputs["ja"].input.push([
             f.path,
             path.join(outputs["ja"].output, name),
           ]);
-      } else if (un.strHasHangul(name + t.Title + t.Artist)) {
-        log.info(chalk.cyan(`KR: ${name} ${t.Artist}-${t.Title}`));
+      } else if (un.strHasHangul(name + title + artist)) {
+        log.info(chalk.cyan(`KR: ${name} ${artist}-${title}`));
         outputs["kr"] &&
           outputs["kr"].input.push([
             f.path,
             path.join(outputs["kr"].output, name),
           ]);
-      } else if (un.strHasHanyu(name + t.Title + t.Artist)) {
-        log.info(chalk.green(`CN: ${name} ${t.Artist}-${t.Title}`));
+      } else if (un.strHasHanyu(name + title + artist)) {
+        log.info(chalk.green(`CN: ${name} ${artist}-${title}`));
         outputs["cn"] &&
           outputs["cn"].input.push([
             f.path,
             path.join(outputs["cn"].output, name),
           ]);
-      } else if (un.strOnlyASCII(name + t.Title + t.Artist)) {
+      } else if (un.strOnlyASCII(name + title + artist)) {
         // only ascii = english
-        log.info(chalk.gray(`EN: ${name} ${t.Artist}-${t.Title}`));
+        log.info(chalk.gray(`EN: ${name} ${artist}-${title}`));
         outputs["en"] &&
           outputs["en"].input.push([
             f.path,
             path.join(outputs["en"].output, name),
           ]);
       } else {
-        log.info(chalk.gray(`MISC: ${name} ${t.Artist}-${t.Title}`));
+        log.info(chalk.gray(`MISC: ${name} ${artist}-${title}`));
         outputs["xx"] &&
           outputs["xx"].input.push([
             f.path,
@@ -681,23 +690,25 @@ async function executeMoveByLng(root, lng = []) {
           ]);
       }
     } else {
-      log.warn(`Invalid: ${path.basename(f.path)}`);
+      log.info("cmdMove", `no valid tags: ${h.ps(f.path)}`);
     }
   });
 
-  log.info(`Input: ${root} lng=${lng}`);
+  log.info("cmdMove", `Input: ${root} lng=${lng}`);
   let taskCount = 0;
   for (const [k, v] of Object.entries(outputs)) {
     taskCount += v.input.length;
-    log.info(
-      `Prepared: [${v.id.toUpperCase()}] ${
-        v.input.length
-      } files will be moved to "${v.output}"`
-    );
+    v.input.length > 0 &&
+      log.showGreen(
+        "cmdMove",
+        `Prepared: [${v.id.toUpperCase()}] ${
+          v.input.length
+        } files will be moved to "${v.output}"`
+      );
   }
 
   if (taskCount == 0) {
-    log.warn(`No files need to be processed, abort.`);
+    log.warn("cmdMove", `No files need to be processed, abort.`);
     return;
   }
 
@@ -715,13 +726,13 @@ async function executeMoveByLng(root, lng = []) {
       await fs.mkdir(dout);
     }
     async function ensureMove(src, dst) {
-      log.debug(`ensureMove: ${h.ps(src)} => ${h.ps(dst)}`);
+      log.debug(`Move: ${h.ps(src)} => ${h.ps(dst)}`);
       if (src == dst) {
         log.debug(`Skip:${src}`);
         return;
       }
-      if (await fs.pathExists(src)) {
-        log.debug(`NotExists:${src}`);
+      if (!(await fs.pathExists(src))) {
+        log.info(`NotExists:${src}`);
         return;
       }
       try {
@@ -734,7 +745,7 @@ async function executeMoveByLng(root, lng = []) {
           log.info(`Moved to ${dst}`);
         }
       } catch (error) {
-        log.error(error);
+        log.error("Move", error);
       }
     }
     // https://zellwk.com/blog/async-await-in-loops/
@@ -774,7 +785,8 @@ async function executeMoveByLng(root, lng = []) {
           return dst;
         })
       );
-      log.showMagenta(
+      log.showGreen(
+        "cmdMove",
         `Progress: ${v.results.length} ${v.id} files moved to ${v.output}`
       );
     }
@@ -782,11 +794,15 @@ async function executeMoveByLng(root, lng = []) {
     for (const [k, v] of Object.entries(outputs)) {
       v.results &&
         log.showGreen(
+          "cmdMove",
           `Result: ${v.results.length} ${v.id} files moved to "${v.output}"`
         );
     }
-    log.showGreen(`Total ${fileCount} files processed in ${h.ht(startMs)}`);
+    log.showGreen(
+      "cmdMove",
+      `Total ${fileCount} files processed in ${h.ht(startMs)}`
+    );
   } else {
-    log.warn("Will do nothing, aborted by user.");
+    log.warn("cmdMove", "Will do nothing, aborted by user.");
   }
 }

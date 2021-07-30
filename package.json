@@ -1,6 +1,6 @@
 {
   "name": "audio-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Command line utilities for analyze/split/convert/rename/edit audio files. ",
   "main": "index.js",
   "scripts": {
@@ -44,6 +44,7 @@
     "inquirer": "^8.1.2",
     "loglevel": "^1.7.1",
     "loglevel-plugin-prefix": "^0.8.4",
+    "lookpath": "^1.2.2",
     "music-metadata": "^7.11.0",
     "pretty-error": "^3.0.4",
     "printf": "^0.6.1",
@@ -59,5 +60,8 @@
       "*.js"
     ],
     "outputPath": "dist"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "^4.4.0"
   }
 }

@@ -22,6 +22,8 @@ npm install audio-cli -g
 
 ## Usage
 
+**You must have ffmpeg executable in you PATH to use split and convert command!**
+
 ### Command Help:
 
 ```

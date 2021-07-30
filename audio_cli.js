@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const util = require("util");
+const { lookpath } = require("lookpath");
 const fsWalk = require("@nodelib/fs.walk");
 const path = require("path");
 const chalk = require("chalk");
@@ -32,6 +33,14 @@ const configCli = (argv) => {
   log.debug(argv);
 };
 const yargs = require("yargs/yargs")(process.argv.slice(2))
+  .command(
+    ["test", "$0"],
+    "Test ffmpeg executable exists",
+    (yargs) => {},
+    (argv) => {
+      cmdTest();
+    }
+  )
   .command(
     ["parse <input> [options]", "ps"],
     "Parse id3 metadata for audio files and save to database",
@@ -344,6 +353,17 @@ async function dbReadTags(root) {
 //////////////////////////////////////////////////////////////////////
 // AUDIO TAGS DATABASE METHODS END
 //////////////////////////////////////////////////////////////////////
+
+async function cmdTest(argv) {
+  const ffmpegBin = "ffmpeg";
+  const p = await lookpath(ffmpegBin);
+  yargs.showHelp();
+  if (!p) {
+    log.error(
+      `You must have "${ffmpegBin}" in you PATH to use split and convert command!`
+    );
+  }
+}
 
 async function cmdParse(argv) {
   const input = path.resolve(argv.input);

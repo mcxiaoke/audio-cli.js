@@ -3,7 +3,7 @@ const iconv = require("iconv-lite");
 const workerpool = require("workerpool");
 const path = require("path");
 const fs = require("fs-extra");
-const d = require("./lib/debug");
+const log = require("./lib/debug");
 const h = require("./lib/helper");
 const cue = require("./lib/cue");
 const chalk = require("chalk");
@@ -14,16 +14,18 @@ function executeCommand(command, args = []) {
   let output;
   if (result.status != 0) {
     output = iconv.decode(result.stderr, "utf8");
-    d.W(
-      chalk.red(
-        `Command Failed: '${command} ${argsStr}' (${result.status}):${output} (${process.pid})`
-      )
+    log.error(
+      "executeCommand",
+      command,
+      argsStr,
+      result.status,
+      output,
+      process.pid
     );
   } else {
     output = iconv.decode(result.stdout, "utf8");
-    d.D(`Command Success: '${command} ${argsStr}' (${process.pid})`);
+    log.debug("executeCommand", command, argsStr, output, process.pid);
   }
-  output && d.D(`Execute Command output: ${output}`);
   return {
     command: command,
     args: args,
@@ -38,7 +40,7 @@ function cmdExifTool(file) {
   try {
     return JSON.parse(iconv.decode(result.stdout, "utf8"))[0];
   } catch (error) {
-    d.E(`ERROR! cmdExifTool ${error} <${file}>`);
+    log.error("cmdExifTool", error, file);
   }
 }
 
@@ -51,12 +53,13 @@ function cmdFFProbe(file) {
   try {
     return JSON.parse(iconv.decode(result.stdout, "utf8"))[0];
   } catch (error) {
-    d.E(`ERROR! cmdFFProbe ${error} <${file}>`);
+    log.error("cmdFFProbe", error, file);
   }
 }
 
-function getTrackArgs(track) {
+function getFFmpegArgs(track) {
   const fileSrc = track.file;
+  log.debug("getFFmpegArgs input:", fileSrc);
   const dstDir = path.dirname(fileSrc);
   const dstName = `${track.artist} @ ${track.title}.m4a`;
   const fileDst = path.join(dstDir, dstName);
@@ -90,7 +93,7 @@ function getTrackArgs(track) {
   args = args.concat("-map a:0 -c:a libfdk_aac -b:a 320k".split(" "));
   args.push(`${fileDst}`);
   args.push("-hide_banner");
-  d.D("getTrackArgs", "ffmpeg", args);
+  log.debug("getFFmpegArgs", "ffmpeg", args);
   return {
     fileDst: fileDst,
     index: track.index,
@@ -99,21 +102,23 @@ function getTrackArgs(track) {
 }
 
 // convert one ape/wav/flac file with cue to multi aac tracks
-function splitTracks(file, index) {
+function splitTracks(file, i, logLevel) {
+  logLevel && log.setLevel(logLevel);
   // ffmpeg -ss 00:00:00.00 -to 00:04:34.35 -i .\女生宿舍.ape -map a:0 -c:a libfdk_aac -b:a 320k -metadata title="恋人未满" -metadata artist="S.H.E" -metadata album="女生宿舍" track01.m4a
   const fileSrc = path.resolve(file.path);
-  d.L(`splitTracks: ${h.ps(fileSrc)} (${index})`);
+  const audioName = path.basename(file.audio);
+  log.debug("splitTracks input:", i, file, logLevel || -1);
   let tracks;
   try {
-    tracks = cue.parseAudioTracks(fileSrc);
+    tracks = cue.parseAudioTracks(file);
   } catch (error) {
     tracks = null;
-    d.W(chalk.red(`splitTracks: ${fileSrc} (${index}) ${error}`));
+    log.error("splitTracks", i, error, fileSrc);
   }
   if (!tracks || tracks.length == 0) {
-    d.W(chalk.yellow(`splitTracks: no tracks found for ${fileSrc} (${index})`));
+    log.warn("splitTracks", i, "no tracks found", fileSrc);
     return {
-      file: fileSrc,
+      file: file,
       skipped: [],
       failed: [{ file: fileSrc, error: "Failed to parse cue" }],
     };
@@ -122,32 +127,61 @@ function splitTracks(file, index) {
   const failed = [];
   const skipped = [];
   for (const track of tracks) {
-    const ta = getTrackArgs(track);
-    d.I(`Track (${track.index}): to ${h.ps(ta.fileDst)}`);
+    const ta = getFFmpegArgs(track);
+    log.debug(
+      "splitTracks Begin:",
+      `${file.audio} Track-${ta.index}:`,
+      path.basename(ta.fileDst)
+    );
     if (fs.pathExistsSync(ta.fileDst)) {
-      d.I(chalk.gray(`Skip Track: ${h.ps(ta.fileDst)} (${ta.index})`));
       skipped.push({ file: ta.fileDst });
+      log.info(
+        "splitTracks Skip:",
+        `${file.audio} Track-${ta.index}:`,
+        path.basename(ta.fileDst)
+      );
       continue;
     }
     const r = executeCommand("ffmpeg", ta.args);
     if (r.status == 0) {
-      d.L(chalk.green(`Track(${track.index}) saved to ${h.ps(ta.fileDst)}`));
+      log.show(
+        "splitTracks Save:",
+        `${file.audio} Track-${ta.index}:`,
+        path.basename(ta.fileDst)
+      );
     } else {
-      d.W(
-        chalk.yellow(
-          `Track(${track.index}) ${h.ps(ta.fileDst)} Error:${r.output}`
-        )
+      log.error(
+        "splitTracks Error:",
+        `${audioName} Track-${ta.index}:`,
+        r.output,
+        ta.fileDst
       );
       failed.push({ file: ta.fileDst, error: r.output });
     }
   }
+  skipped.length > 0 &&
+    log.warn(
+      "splitTracks Result:",
+      `Skip ${skipped.length} tracks of`,
+      file.audio,
+      path.basename(file.path)
+    );
   if (failed.length == 0) {
-    d.L(chalk.green(`All OK (${index}): ${h.ps(fileSrc)}`));
+    log.showGreen(
+      "splitTracks Result: All Tracks OK",
+      file.audio,
+      path.basename(file.path)
+    );
   } else {
-    d.W(`Some OK (${index}): ${h.ps(fileSrc)} ${failed.length} failed`);
+    log.warn(
+      "splitTracks Result: Some Tracks OK",
+      `${failed.length} failed`,
+      file.audio,
+      path.basename(file.path)
+    );
   }
   const r = {
-    file: fileSrc,
+    file: file,
     failed: failed,
     skipped: skipped,
   };

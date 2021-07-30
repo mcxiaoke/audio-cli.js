@@ -10,6 +10,7 @@ const cpuCount = require("os").cpus().length;
 const h = require("./lib/helper");
 const log = require("./lib/debug");
 const un = require("./lib/unicode");
+const cue = require("./lib/cue");
 const { boolean } = require("yargs");
 const sqlite = require("sqlite");
 const sqlite3 = require("sqlite3");
@@ -26,6 +27,7 @@ prettyError.skipNodeFiles();
 //////////////////////////////////////////////////////////////////////
 
 const configCli = (argv) => {
+  // log.setName("AudioCli");
   log.setLevel(argv.verbose);
   log.debug(argv);
 };
@@ -65,7 +67,7 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
         });
     },
     (argv) => {
-      cmdCueSplit(argv);
+      cmdSplit(argv);
     }
   )
   .command(
@@ -194,26 +196,37 @@ async function parseTags(files) {
   log.info("parseTags", `for ${files.length} files`);
   const start = Date.now();
   const results = [];
-  for (const [i, file] of files.entries()) {
-    const f = file.path;
-    let tags;
+  for (const [i, f] of files.entries()) {
+    let mt;
     try {
-      const mt = await metadata.parseFile(f, { skipCovers: true });
-
-      if (!mt.format.tagTypes || mt.format.tagTypes.length == 0) {
-        log.warn("parseTags", chalk.yellow("no tags found"), i, f);
+      mt = await metadata.parseFile(f.path, { skipCovers: true });
+      if (mt && mt.format.tagTypes && mt.format.tagTypes.length > 0) {
+        log.debug(
+          "parseTags",
+          i,
+          f.path,
+          mt.common.artist,
+          mt.common.title,
+          mt.format.tagTypes
+        );
       } else {
-        log.debug("parseTags", i, f, mt.common, mt.format.tagTypes);
+        log.warn("parseTags", i, "no tags found", f.path);
       }
-      tags = mt.common;
     } catch (error) {
-      log.error("parseTags", i, f, String(error));
+      log.error("parseTags", i, "no tags found", f.path, error.message);
+      if (log.getLevel() <= 1) {
+        console.error(i, error, f.path);
+      }
     }
-    f.tags = tags;
-    results.push(f);
+
+    f.tags = mt && mt.common;
+    f.tags && results.push(f);
   }
   const elapsed = Date.now() - start;
-  log.info("parseTags", `${files.length} files parsed in ${elapsed}ms`);
+  log.info(
+    "parseTags",
+    `${results.length}/${files.length} files have tags ${elapsed}ms`
+  );
   return results;
 }
 
@@ -261,13 +274,12 @@ async function dbSaveTagRow(db, f) {
     throw new Error("Database and file object is required!");
   }
   const ret = await db.run(
-    "INSERT OR REPLACE INTO tags VALUES (?,?,?,?,?,?)",
+    "INSERT OR REPLACE INTO tags VALUES (?,?,?,?)",
     f.size || f.stats.size || 0,
     path.basename(f.path),
     f.path,
-    JSON.stringify(f)
+    JSON.stringify(f.tags)
   );
-  log.debug("dbSaveTagRow", `row added for ${ret.lastID} for ${f.path} `);
   return ret;
 }
 
@@ -279,15 +291,19 @@ async function dbSaveTags(files) {
   const results = [];
   const db = await dbOpenDatabase();
   const dbStartMs = Date.now();
-  db.run("BEGIN TRANSACTION");
+  // https://www.sqlite.org/lang_transaction.html
+  db.run("BEGIN");
   try {
-    for (const f of files) {
-      results.push(await dbSaveTagRow(db, f));
+    for (const [i, f] of files.entries()) {
+      const ret = await dbSaveTagRow(db, f);
+      results.push(ret);
+      log.debug("dbSaveTags", i, `row-${ret.lastID} added ${f.path} `);
     }
   } catch (error) {
-    d.E(error);
+    db.run("ROLLBACK");
+    log.error("dbSaveTags rollback", error);
   }
-  db.run("COMMIT TRANSACTION");
+  db.run("COMMIT");
   await db.close();
   log.info("dbSaveTags", `Insert ${files.length} rows in ${h.ht(dbStartMs)}`);
   return results;
@@ -322,7 +338,7 @@ async function dbReadTags(root) {
 
 async function cmdParse(argv) {
   const input = path.resolve(argv.input);
-  log.debug("cmdParse", input);
+  log.show("cmdParse Input:", input);
   let stats;
   try {
     stats = await fs.stat(input);
@@ -341,41 +357,49 @@ async function cmdParse(argv) {
     files = [];
   }
   const fileCount = files.length;
-  log.show("cmdParse", `${fileCount} files found in ${h.ht(startMs)}`);
+  log.show(
+    "cmdParse",
+    `found ${fileCount} files in "${input}" ${h.ht(startMs)}`
+  );
   startMs = Date.now();
   // maybe very slow over network
   files = await parseTags(files);
-  log.show("cmdParse", `${fileCount} files parsed in ${h.ht(startMs)}`);
+  log.show("cmdParse", `found tags for ${files.length} files ${h.ht(startMs)}`);
   argv.save && (await dbSaveTags(files));
 }
 
 async function cmdSplit(argv) {
-  const root = path.resolve(argv.source);
+  const root = path.resolve(argv.input);
+  log.show("cmdSplit Input:", root);
   if (!root || !(await fs.pathExists(root))) {
     yargs.showHelp();
-    log.error("cmdSplit", `Invalid Input: '${root}'`);
+    log.error("cmdSplit", "Invalid Input:", input);
     return;
   }
-  await executeSplit(root);
-}
-
-async function executeSplit(root) {
-  log.info(`executeSplit: ${root}`);
   const startMs = Date.now();
   let files = await listFiles(root, {
     entryFilter: (f) => h.ext(f.path, true) == ".cue",
   });
+  files = await Promise.all(
+    files.map(async (f) => {
+      return await cue.findAudioFile(f.path);
+    })
+  );
+  files = files.filter((f) => f.audio);
   for (const f of files) {
-    log.info(`Found CUE: ${h.ps(f.path)}`);
+    log.show(`cmdSplit CUE`, f.audio, `(${path.basename(f.path)})`);
   }
-  log.info(`Total ${files.length} cue files found in ${h.ht(startMs)}`);
+  log.show(
+    "cmdSplit",
+    `found ${files.length} cue with audio files ${h.ht(startMs)}`
+  );
   const answer = await inquirer.prompt([
     {
       type: "confirm",
       name: "yes",
       default: false,
       message: chalk.bold.red(
-        `Are you sure to split ${files.length} cue files?`
+        `Are you sure to split ${files.length} audio files by cue sheet?`
       ),
     },
   ]);
@@ -384,23 +408,28 @@ async function executeSplit(root) {
     for (const r of results) {
       if (r.failed && r.failed.length > 0) {
         for (const fd of r.failed) {
-          log.warn("executeSplit", `${fd.error} ${fd.file}`);
+          log.warn("cmdSplit", fd.error, fd.file);
         }
       } else {
-        log.showGreen("executeSplit", `all done for ${h.ps(r.file)}`);
+        log.showGreen(
+          "cmdSplit",
+          "All done",
+          r.file.audio,
+          path.basename(r.file.path)
+        );
       }
     }
     log.showGreen(
-      "executeSplit",
-      `total ${results.length} audio files splitted by cue sheet.`
+      "cmdSplit",
+      `Total ${results.length} audio files splitted by cue sheet.`
     );
   } else {
-    log.showYellow("Will do nothing, aborted by user.");
+    log.showYellow("cmdSplit", "Will do nothing, aborted by user.");
   }
 }
 
 async function splitAllCue(files) {
-  log.info(`splitAllCue: Adding ${files.length} tasks`);
+  log.info("splitAllCue", `Adding ${files.length} tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
     maxWorkers: cpuCount - 1,
     workerType: "process",
@@ -408,14 +437,13 @@ async function splitAllCue(files) {
   const startMs = Date.now();
   const results = await Promise.all(
     files.map(async (f, i) => {
-      return await pool.exec("splitTracks", [f, i + 1]);
+      return await pool.exec("splitTracks", [f, i + 1, log.getLevel()]);
     })
   );
   await pool.terminate();
   log.info(
-    `splitAllCue: ${results.length} cue files splitted to tracks in ${h.ht(
-      startMs
-    )}.`
+    "splitAllCue",
+    `${results.length} cue files splitted to tracks in ${h.ht(startMs)}.`
   );
   return results;
 }

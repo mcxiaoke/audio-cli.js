@@ -69,10 +69,10 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           describe: "Input folder that contains audio files",
           type: "string",
         })
-        .option("force", {
-          alias: "f",
+        .option("libfdk", {
+          alias: ["fdk", "f"],
           type: "boolean",
-          describe: "Force to override exists file",
+          describe: "Use libfdk_aac encoder in ffmpeg command",
         });
     },
     (argv) => {
@@ -92,10 +92,10 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           describe: "Input folder that contains audio files",
           type: "string",
         })
-        .option("force", {
-          alias: "f",
+        .option("libfdk", {
+          alias: ["fdk", "f"],
           type: "boolean",
-          describe: "Force to override existing file",
+          describe: "Use libfdk_aac encoder in ffmpeg command",
         });
     },
     (argv) => {
@@ -433,7 +433,7 @@ async function cmdSplit(argv) {
     },
   ]);
   if (answer.yes) {
-    const results = await splitAllCue(files);
+    const results = await splitAllCue(files, argv.libfdk);
     for (const r of results) {
       if (r.failed && r.failed.length > 0) {
         for (const fd of r.failed) {
@@ -457,14 +457,14 @@ async function cmdSplit(argv) {
   }
 }
 
-async function splitAllCue(files) {
+async function splitAllCue(files, useLibfdkAAC) {
   log.info("splitAllCue", `Adding ${files.length} tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
     maxWorkers: cpuCount - 1,
     workerType: "process",
   });
   const startMs = Date.now();
-  const options = { logLevel: log.getLevel() };
+  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdkAAC };
   const results = await Promise.all(
     files.map(async (f, i) => {
       return await pool.exec("splitTracks", [f, i + 1, options]);
@@ -479,6 +479,7 @@ async function splitAllCue(files) {
 }
 
 async function cmdConvert(argv) {
+  log.debug("cmdConvert", argv);
   const root = path.resolve(argv.input);
   log.show("cmdConvert input:", root);
   if (!root || !fs.pathExistsSync(root)) {
@@ -562,7 +563,7 @@ async function cmdConvert(argv) {
     },
   ]);
   if (answer.yes) {
-    const results = await convertAll(files);
+    const results = await convertAll(files, argv.libfdk);
     log.showGreen(
       "cmdConvert",
       `All ${results.length} audio files are converted to AAC format.`
@@ -608,7 +609,7 @@ async function checkFiles(files) {
   return files;
 }
 
-async function convertAll(files) {
+async function convertAll(files, useLibfdkAAC) {
   log.info("convertAll", `Adding ${files.length} converting tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
     maxWorkers: cpuCount - 1,
@@ -616,7 +617,7 @@ async function convertAll(files) {
   });
   log.debug("convertAll", pool);
   const startMs = Date.now();
-  const options = { logLevel: log.getLevel() };
+  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdkAAC };
   const results = await Promise.all(
     files.map(async (f, i) => {
       const result = await pool.exec("convertAudio", [f, i + 1, options]);

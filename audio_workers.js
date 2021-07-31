@@ -57,7 +57,7 @@ function cmdFFProbe(file) {
   }
 }
 
-function getFFmpegArgs(track) {
+function getFFmpegArgs(track, options) {
   const fileSrc = track.file;
   log.debug("getFFmpegArgs input:", fileSrc);
   const dstDir = path.dirname(fileSrc);
@@ -90,7 +90,12 @@ function getFFmpegArgs(track) {
   args.push("-metadata");
   args.push(`track=${track.index}`);
   // end insert metadata
-  args = args.concat("-map a:0 -c:a libfdk_aac -b:a 320k".split(" "));
+  // aac ir libfdk_aac (if support)
+  args = args.concat(
+    `-map a:0 -c:a ${
+      options.useLibfdkAAC ? "libfdk_aac" : "aac"
+    } -b:a 320k`.split(" ")
+  );
   args.push(`${fileDst}`);
   args.push("-hide_banner");
   log.debug("getFFmpegArgs", "ffmpeg", args);
@@ -103,9 +108,9 @@ function getFFmpegArgs(track) {
 
 // convert one ape/wav/flac file with cue to multi aac tracks
 function splitTracks(file, i, options) {
-  log.debug(`Processing(${i}):`, file.path, options);
   options = options || {};
   options.logLevel && log.setLevel(options.logLevel);
+  log.info(`Processing(${i}):`, file.path, options);
   // ffmpeg -ss 00:00:00.00 -to 00:04:34.35 -i .\女生宿舍.ape -map a:0 -c:a libfdk_aac -b:a 320k -metadata title="恋人未满" -metadata artist="S.H.E" -metadata album="女生宿舍" track01.m4a
   const fileSrc = path.resolve(file.path);
   const audioName = path.basename(file.audio);
@@ -129,7 +134,7 @@ function splitTracks(file, i, options) {
   const failed = [];
   const skipped = [];
   for (const track of tracks) {
-    const ta = getFFmpegArgs(track);
+    const ta = getFFmpegArgs(track, options);
     log.debug(
       "splitTracks Begin:",
       `${file.audio} Track-${ta.index}:`,
@@ -192,9 +197,9 @@ function splitTracks(file, i, options) {
 
 // convert one mp3/ape/wav/flac to single aac file
 function convertAudio(file, i, options) {
-  log.debug(`Processing(${i}):`, file.path, options);
   options = options || {};
   options.logLevel && log.setLevel(options.logLevel);
+  log.info(`Processing(${i}):`, file.path, options);
   // ls *.mp3 | parallel ffmpeg -n -loglevel repeat+level+warning -i "{}" -map a:0 -c:a libfdk_aac -b:a 192k output/"{.}".m4a -hide_banner
   const fileSrc = path.resolve(file.path);
   const [dir, base, ext] = h.pathSplit(fileSrc);
@@ -206,7 +211,11 @@ function convertAudio(file, i, options) {
   }
   let args = "-n -loglevel repeat+level+info -i".split(" ");
   args.push(fileSrc);
-  args = args.concat("-map a:0 -c:a libfdk_aac -b:a".split(" "));
+  args = args.concat(
+    `-map a:0 -c:a ${options.useLibfdkAAC ? "libfdk_aac" : "aac"} -b:a`.split(
+      " "
+    )
+  );
   if (file.loseless || file.bitRate > 320) {
     args.push("320k");
   } else {

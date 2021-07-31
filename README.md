@@ -78,6 +78,7 @@ Positionals:
   input  Input folder that contains audio files              [string] [required]
 
 Options:
+  -f, --libfdk, --fdk  Use libfdk_aac encoder in ffmpeg command        [boolean]
       --version  Show version number                                   [boolean]
   -h, --help     Show help                                             [boolean]
 ```
@@ -93,6 +94,7 @@ Positionals:
   input  Input folder that contains audio files              [string] [required]
 
 Options:
+  -f, --libfdk, --fdk  Use libfdk_aac encoder in ffmpeg command        [boolean]
       --version  Show version number                                   [boolean]
   -h, --help     Show help                                             [boolean]
 ```

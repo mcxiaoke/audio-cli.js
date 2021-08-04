@@ -1,6 +1,6 @@
 {
   "name": "audio-cli",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Command line utilities for analyze/split/convert/rename/edit audio files. ",
   "main": "index.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "bin": {
-    "audio_cli": "audio_cli.js"
+    "audioc": "audio_cli.js"
   },
   "repository": {
     "type": "git",

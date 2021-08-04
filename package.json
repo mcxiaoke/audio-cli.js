@@ -1,6 +1,6 @@
 {
   "name": "audio-cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Command line utilities for analyze/split/convert/rename/edit audio files. ",
   "main": "index.js",
   "scripts": {
@@ -50,7 +50,7 @@
     "printf": "^0.6.1",
     "sanitize-filename": "^1.6.3",
     "sqlite": "^4.0.23",
-    "sqlite3": "^5.0.2",
+    "sqlite3": "^4.2.0",
     "workerpool": "^6.1.5",
     "yargs": "^17.0.1"
   },

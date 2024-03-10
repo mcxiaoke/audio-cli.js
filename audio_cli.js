@@ -205,7 +205,7 @@ async function listFiles(root, options) {
 }
 
 async function listAudio(root, loslessOnly = true) {
-  return listFiles(root, { entryFilter: (entry) => loslessOnly ? h.isAudioFile(entry.path) : h.isLosslessAudio(entry.path) });
+  return listFiles(root, { entryFilter: (entry) => loslessOnly ? h.isLosslessAudio(entry.path) : h.isAudioFile(entry.path) });
 }
 
 function selectAudioTag(mt) {
@@ -497,7 +497,7 @@ async function splitAllCue(files, useLibfdkAAC) {
 }
 
 async function cmdConvert(argv) {
-  log.debug("cmdConvert", argv);
+  log.info("cmdConvert", argv);
   const root = path.resolve(argv.input);
   log.show("cmdConvert input:", root);
   if (!root || !await fs.pathExists(root)) {

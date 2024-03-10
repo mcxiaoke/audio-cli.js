@@ -12,7 +12,7 @@ const h = require("./lib/helper");
 const log = require("./lib/debug");
 const un = require("./lib/unicode");
 const cue = require("./lib/cue");
-const { boolean } = require("yargs");
+const { boolean, option } = require("yargs");
 const sqlite = require("sqlite");
 const sqlite3 = require("sqlite3");
 const metadata = require("music-metadata");
@@ -36,7 +36,7 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
   .command(
     ["test", "$0"],
     "Test ffmpeg executable exists",
-    (yargs) => {},
+    (yargs) => { },
     (argv) => {
       cmdTest();
     }
@@ -96,6 +96,11 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           alias: ["fdk", "f"],
           type: "boolean",
           describe: "Use libfdk_aac encoder in ffmpeg command",
+        })
+        .option("notags", {
+          alias: "n",
+          type: "boolean",
+          describe: "Skip parse audio tags",
         });
     },
     (argv) => {
@@ -222,7 +227,7 @@ async function parseTags(files) {
         log.info("parseTags", i, "no tags found", f.path);
       }
     } catch (error) {
-      log.error("parseTags", i, "no tags found", f.path, error.message);
+      log.warn("parseTags", i, "no tags found", f.path, error.message);
       if (log.getLevel() >= 2) {
         console.error(i, error, f.path);
       }
@@ -460,7 +465,7 @@ async function cmdSplit(argv) {
 async function splitAllCue(files, useLibfdkAAC) {
   log.info("splitAllCue", `Adding ${files.length} tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
-    maxWorkers: cpuCount - 1,
+    maxWorkers: cpuCount / 2 + 1,
     workerType: "process",
   });
   const startMs = Date.now();
@@ -508,30 +513,42 @@ async function cmdConvert(argv) {
     log.warn("cmdConvert", "Nothing to do, exit now.");
     return;
   }
-  // const dbFiles = await dbReadTags(root);
-  const dbFiles = [];
-  log.info(
-    "cmdConvert",
-    `load ${dbFiles.length} entries from database ${h.ht(startMs)}`
-  );
-  const taggedFiles = dbFiles.filter((f) => filePaths.includes(f.path));
-  if (taggedFiles.length < files.length) {
-    // some files not found in db
-    // parse exif tags and save to db
-    log.warn(
+
+  if (!argv.notags) {
+    // const dbFiles = await dbReadTags(root);
+    const dbFiles = [];
+    log.info(
       "cmdConvert",
-      `${
-        fileCount - taggedFiles.length
-      } files have no cached tags, need to parse file to read tags`
+      `load ${dbFiles.length} entries from database ${h.ht(startMs)}`
     );
-    files = await parseTags(files);
-    await dbSaveTags(files);
-  } else {
-    log.warn(
-      "cmdConvert",
-      "All files have cached tags in database, skip parse file"
-    );
-    files = taggedFiles;
+    let taggedFiles = dbFiles.filter((f) => filePaths.includes(f.path));
+    if (taggedFiles.length < files.length) {
+      // some files not found in db
+      // parse exif tags and save to db
+      log.warn(
+        "cmdConvert",
+        `${fileCount - taggedFiles.length
+        } files have no cached tags, need to parse file to read tags`
+      );
+      taggedFiles = await parseTags(files);
+      await dbSaveTags(files);
+      if (taggedFiles.length > 0) {
+        files = taggedFiles;
+      }
+    } else {
+      log.warn(
+        "cmdConvert",
+        "All files have cached tags in database, skip parse file"
+      );
+    }
+
+    if (taggedFiles.length == 0 || taggedFiles.length < fileCount) {
+      log.warn(
+        "cmdConvert",
+        `${fileCount - taggedFiles.length
+        } files have no cached tags finally`
+      );
+    }
   }
 
   files = await checkFiles(files);
@@ -581,15 +598,23 @@ async function checkFiles(files) {
     files.map(async (f, i) => {
       const index = i + 1;
       const [dir, base, ext] = h.pathSplit(f.path);
+      const aacfile = path.join(dir, `${base}.m4a`);
+      if (await fs.pathExists(aacfile)) {
+        log.showGray(
+          "checkFiles",
+          `SkipExists: ${h.ps(aacfile)}`, index
+        );
+        return false;
+      }
       if (ext && ext.toLowerCase() == ".m4a") {
-        log.info("checkFiles", `SkipAAC (${index}): ${h.ps(f.path)}`, index);
+        log.showGray("checkFiles", `SkipAAC: ${h.ps(f.path)}`, index);
         return false;
       }
       const cuefile = path.join(dir, `${base}.cue`);
       if (await fs.pathExists(cuefile)) {
-        log.warn(
+        log.showGray(
           "checkFiles",
-          `SkipCUE (${index}) cue file found for ${f.path}`
+          `SkipCUE cue found ${h.ps(f.path)}`, index
         );
         return false;
       }
@@ -722,8 +747,7 @@ async function cmdMove(argv) {
     v.input.length > 0 &&
       log.showGreen(
         "cmdMove",
-        `Prepared: [${v.id.toUpperCase()}] ${
-          v.input.length
+        `Prepared: [${v.id.toUpperCase()}] ${v.input.length
         } files will be moved to "${v.output}"`
       );
   }

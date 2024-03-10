@@ -92,15 +92,28 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           describe: "Input folder that contains audio files",
           type: "string",
         })
+        .option("extensions", {
+          alias: "e",
+          type: "string",
+          describe: "include files by extensions (eg. .wav|.flac)",
+        })
         .option("libfdk", {
           alias: ["fdk", "f"],
           type: "boolean",
+          default: true,
           describe: "Use libfdk_aac encoder in ffmpeg command",
         })
         .option("notags", {
           alias: "n",
           type: "boolean",
+          default: false,
           describe: "Skip parse audio tags",
+        })
+        .option("lossless", {
+          alias: "l",
+          type: "boolean",
+          default: true,
+          describe: "Handle lossess audio files only",
         });
     },
     (argv) => {
@@ -191,8 +204,8 @@ async function listFiles(root, options) {
   return files;
 }
 
-async function listAudio(root) {
-  return listFiles(root, { entryFilter: (entry) => h.isAudioFile(entry.path) });
+async function listAudio(root, loslessOnly = true) {
+  return listFiles(root, { entryFilter: (entry) => loslessOnly ? h.isAudioFile(entry.path) : h.isLosslessAudio(entry.path) });
 }
 
 function selectAudioTag(mt) {
@@ -487,7 +500,7 @@ async function cmdConvert(argv) {
   log.debug("cmdConvert", argv);
   const root = path.resolve(argv.input);
   log.show("cmdConvert input:", root);
-  if (!root || !fs.pathExistsSync(root)) {
+  if (!root || !await fs.pathExists(root)) {
     yargs.showHelp();
     log.error("cmdConvert", `Invalid Input: '${root}'`);
     return;
@@ -497,12 +510,18 @@ async function cmdConvert(argv) {
   // list all files in dir recursilly
   // keep only non-m4a audio files
   // todo add check to ensure is audio file
-  let files = await listAudio(root);
+  let files = await listFiles(root);
+  const extensions = (argv.extensions || "").toLowerCase();
+  if (extensions.length >= 3) {
+    files = files.filter(f => extensions.includes(h.ext(f)))
+  } else {
+    files = await listAudio(root, argv.lossless || true);
+  }
   const fileCount = files.length;
   const filePaths = files.map((f) => f.path);
   log.show(
     "cmdConvert",
-    `found ${files.length} audio files in ${root} ${h.ht(startMs)}`
+    `${files.length} audio files found in ${root} ${h.ht(startMs)}`
   );
   // caution: slow on network drives
   // files = await exif.readAllTags(files);
@@ -580,7 +599,7 @@ async function cmdConvert(argv) {
     },
   ]);
   if (answer.yes) {
-    const results = await convertAll(files, argv.libfdk);
+    const results = await convertAll(files, argv.libfdk || true);
     log.showGreen(
       "cmdConvert",
       `All ${results.length} audio files are converted to AAC format.`
@@ -637,7 +656,7 @@ async function checkFiles(files) {
 async function convertAll(files, useLibfdkAAC) {
   log.info("convertAll", `Adding ${files.length} converting tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
-    maxWorkers: cpuCount - 1,
+    maxWorkers: cpuCount / 2 + 1,
     workerType: "process",
   });
   log.debug("convertAll", pool);

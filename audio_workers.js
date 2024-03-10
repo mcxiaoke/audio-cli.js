@@ -195,7 +195,7 @@ function splitTracks(file, i, options) {
 }
 
 // convert one mp3/ape/wav/flac to single aac file
-function convertAudio(file, i, options) {
+function convertAudio(file, i, total, options) {
   options = options || {};
   options.logLevel && log.setLevel(options.logLevel);
   log.info(`Processing(${i}):`, file.path, options);
@@ -220,20 +220,20 @@ function convertAudio(file, i, options) {
       " "
     )
   );
-  if (file.loseless || file.bitRate > 320) {
+  if (file.loseless || file.bitRate > 319) {
     args.push("320k");
   } else {
-    args.push(file.bitRate > 192 ? "192k" : "128k");
+    args.push(file.bitRate > 256 ? "256k" : "192k");
   }
   args.push(fileDst);
   args.push("-hide_banner");
   log.debug(i, "ffmpeg", args);
   fs.ensureDirSync(dstDir);
-  log.show(`Converting(${i}):`, fileSrc, file.bitRate);
-  log.info(`Converting(${i}):`, args);
+  log.show(`Converting(${i}/${total}):`, h.ps(fileSrc), file.bitRate);
+  log.info(`Converting(${i}/${total}):`, args);
   const result = executeCommand("ffmpeg", args);
   if (result.status == 0) {
-    log.showGreen(`Converted(${i}):`, fileDst);
+    log.showGreen(`Converted(${i}/${total}):`, h.ps(fileDst));
     //caution: delete orignal audio file
     // try {
     //   fs.rmSync(fileSrc);

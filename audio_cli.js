@@ -108,17 +108,17 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           default: true,
           describe: "Use libfdk_aac encoder in ffmpeg command",
         })
-        .option("notags", {
-          alias: "n",
+        .option("withtags", {
+          alias: "w",
           type: "boolean",
           default: false,
-          describe: "Skip parse audio tags",
+          describe: "Parse audio tags",
         })
-        .option("lossless", {
-          alias: "l",
+        .option("all", {
+          alias: "a",
           type: "boolean",
           default: true,
-          describe: "Handle lossess audio files only",
+          describe: "handle all audio files",
         });
     },
     (argv) => {
@@ -233,10 +233,11 @@ async function parseTags(files) {
     try {
       mt = await metadata.parseFile(f.path, { skipCovers: true });
       if (mt && mt.format.tagTypes && mt.format.tagTypes.length > 0) {
-        log.debug(
+        log.show(
           "parseTags",
           i,
-          f.path,
+          files.length,
+          h.ps(f.path),
           mt.common.artist,
           mt.common.title,
           mt.format.tagTypes
@@ -483,7 +484,7 @@ async function cmdSplit(argv) {
 async function splitAllCue(files, useLibfdkAAC) {
   log.info("splitAllCue", `Adding ${files.length} tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
-    maxWorkers: cpuCount / 2 + 1,
+    maxWorkers: cpuCount / 2,
     workerType: "process",
   });
   const startMs = Date.now();
@@ -520,7 +521,7 @@ async function cmdConvert(argv) {
   if (extensions.length >= 3) {
     files = files.filter(entry => h.isAudioFile(entry.path) && extensions.includes(h.ext(entry.path)))
   } else {
-    files = files.filter((entry) => argv.lossless ? h.isLosslessAudio(entry.path) : h.isAudioFile(entry.path))
+    files = files.filter((entry) => argv.all ? h.isAudioFile(entry.path) : h.isLosslessAudio(entry.path))
   }
   const fileCount = files.length;
   const filePaths = files.map((f) => f.path);
@@ -538,7 +539,7 @@ async function cmdConvert(argv) {
     return;
   }
 
-  if (!argv.notags) {
+  if (argv.withtags) {
     // const dbFiles = await dbReadTags(root);
     const dbFiles = [];
     log.info(
@@ -673,7 +674,7 @@ async function checkFiles(files, output) {
 async function convertAll(files, useLibfdk, output) {
   log.info("convertAll", `Adding ${files.length} converting tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
-    maxWorkers: cpuCount / 2 + 1,
+    maxWorkers: cpuCount / 2,
     workerType: "process",
   });
   log.debug("convertAll", pool);
@@ -681,7 +682,7 @@ async function convertAll(files, useLibfdk, output) {
   const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk, output: output };
   const results = await Promise.all(
     files.map(async (f, i) => {
-      const result = await pool.exec("convertAudio", [f, i + 1, options]);
+      const result = await pool.exec("convertAudio", [f, i + 1, files.length, options]);
       return result;
     })
   );

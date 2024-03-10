@@ -119,6 +119,11 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           type: "boolean",
           default: true,
           describe: "handle all audio files",
+        })
+        .option("jobs", {
+          alias: "j",
+          describe: "multi jobs running parallelly",
+          type: "number",
         });
     },
     (argv) => {
@@ -505,7 +510,9 @@ async function splitAllCue(files, useLibfdkAAC) {
 async function cmdConvert(argv) {
   log.info("cmdConvert", argv);
   const root = path.resolve(argv.input);
+  const output = path.resolve(argv.output || root);
   log.show("cmdConvert input:", root);
+  log.show("cmdConvert output:", output);
   if (!root || !await fs.pathExists(root)) {
     yargs.showHelp();
     log.error("cmdConvert", `Invalid Input: '${root}'`);
@@ -576,7 +583,7 @@ async function cmdConvert(argv) {
     }
   }
 
-  files = await checkFiles(files, argv.output);
+  files = await checkFiles(files, output);
 
   log.info(
     "cmdConvert",
@@ -594,6 +601,7 @@ async function cmdConvert(argv) {
     "cmdConvert",
     `There are ${files.length} audio files ready to convert`
   );
+  const jobCount = argv.jobs || cpuCount / 2;
   const answer = await inquirer.prompt([
     {
       type: "confirm",
@@ -605,7 +613,7 @@ async function cmdConvert(argv) {
     },
   ]);
   if (answer.yes) {
-    const results = await convertAll(files, argv.libfdk || true, argv.output);
+    const results = await convertAll(files, argv.libfdk || true, argv.output, jobCount);
     log.showGreen(
       "cmdConvert",
       `All ${results.length} audio files are converted to AAC format.`
@@ -671,10 +679,10 @@ async function checkFiles(files, output) {
   return files;
 }
 
-async function convertAll(files, useLibfdk, output) {
+async function convertAll(files, useLibfdk, output, jobCount) {
   log.info("convertAll", `Adding ${files.length} converting tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
-    maxWorkers: cpuCount / 2,
+    maxWorkers: jobCount,
     workerType: "process",
   });
   log.debug("convertAll", pool);

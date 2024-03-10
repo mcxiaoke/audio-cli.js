@@ -92,6 +92,11 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           describe: "Input folder that contains audio files",
           type: "string",
         })
+        .option("output", {
+          alias: "o",
+          describe: "Output folder that store audio files",
+          type: "string",
+        })
         .option("extensions", {
           alias: "e",
           type: "string",
@@ -513,9 +518,9 @@ async function cmdConvert(argv) {
   let files = await listFiles(root);
   const extensions = (argv.extensions || "").toLowerCase();
   if (extensions.length >= 3) {
-    files = files.filter(f => extensions.includes(h.ext(f)))
+    files = files.filter(entry => h.isAudioFile(entry.path) && extensions.includes(h.ext(entry.path)))
   } else {
-    files = await listAudio(root, argv.lossless || true);
+    files = files.filter((entry) => argv.lossless ? h.isLosslessAudio(entry.path) : h.isAudioFile(entry.path))
   }
   const fileCount = files.length;
   const filePaths = files.map((f) => f.path);
@@ -570,7 +575,7 @@ async function cmdConvert(argv) {
     }
   }
 
-  files = await checkFiles(files);
+  files = await checkFiles(files, argv.output);
 
   log.info(
     "cmdConvert",
@@ -599,7 +604,7 @@ async function cmdConvert(argv) {
     },
   ]);
   if (answer.yes) {
-    const results = await convertAll(files, argv.libfdk || true);
+    const results = await convertAll(files, argv.libfdk || true, argv.output);
     log.showGreen(
       "cmdConvert",
       `All ${results.length} audio files are converted to AAC format.`
@@ -609,7 +614,7 @@ async function cmdConvert(argv) {
   }
 }
 
-async function checkFiles(files) {
+async function checkFiles(files, output) {
   log.info("checkFiles", `before, files count:`, files.length);
   const results = await Promise.all(
     // true means keep
@@ -617,14 +622,26 @@ async function checkFiles(files) {
     files.map(async (f, i) => {
       const index = i + 1;
       const [dir, base, ext] = h.pathSplit(f.path);
-      const aacfile = path.join(dir, `${base}.m4a`);
-      if (await fs.pathExists(aacfile)) {
+      const dstDir = output ? h.pathRewrite(dir, output) : dir;
+      const fileDst = path.join(dstDir, `${base}.m4a`);
+      const fileDstSameDir = path.join(dir, `${base}.m4a`);
+
+      if (await fs.pathExists(fileDst)) {
         log.showGray(
           "checkFiles",
-          `SkipExists: ${h.ps(aacfile)}`, index
+          `SkipExists1: ${h.ps(fileDst)}`, index
         );
         return false;
       }
+
+      if (await fs.pathExists(fileDstSameDir)) {
+        log.showGray(
+          "checkFiles",
+          `SkipExists2: ${h.ps(fileDstSameDir)}`, index
+        );
+        return false;
+      }
+
       if (ext && ext.toLowerCase() == ".m4a") {
         log.showGray("checkFiles", `SkipAAC: ${h.ps(f.path)}`, index);
         return false;
@@ -637,7 +654,7 @@ async function checkFiles(files) {
         );
         return false;
       }
-      if (h.isLosslessAudio(f.path) || f.format.lossless) {
+      if (h.isLosslessAudio(f.path) || (f.format && f.format.lossless)) {
         f.bitRate = 1000;
         f.lossless = true;
       } else {
@@ -653,7 +670,7 @@ async function checkFiles(files) {
   return files;
 }
 
-async function convertAll(files, useLibfdkAAC) {
+async function convertAll(files, useLibfdk, output) {
   log.info("convertAll", `Adding ${files.length} converting tasks`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
     maxWorkers: cpuCount / 2 + 1,
@@ -661,7 +678,7 @@ async function convertAll(files, useLibfdkAAC) {
   });
   log.debug("convertAll", pool);
   const startMs = Date.now();
-  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdkAAC };
+  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk, output: output };
   const results = await Promise.all(
     files.map(async (f, i) => {
       const result = await pool.exec("convertAudio", [f, i + 1, options]);

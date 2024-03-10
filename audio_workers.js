@@ -92,9 +92,8 @@ function getFFmpegArgs(track, options) {
   // end insert metadata
   // aac ir libfdk_aac (if support)
   args = args.concat(
-    `-map a:0 -c:a ${
-      options.useLibfdkAAC ? "libfdk_aac" : "aac"
-    } -b:a 320k`.split(" ")
+    `-map a:0 -c:a ${options.useLibfdkAAC ? "libfdk_aac" : "aac"
+      } -b:a 320k`.split(" ")
   );
   args.push(`${fileDst}`);
   args.push("-hide_banner");
@@ -203,11 +202,16 @@ function convertAudio(file, i, options) {
   // ls *.mp3 | parallel ffmpeg -n -loglevel repeat+level+warning -i "{}" -map a:0 -c:a libfdk_aac -b:a 192k output/"{.}".m4a -hide_banner
   const fileSrc = path.resolve(file.path);
   const [dir, base, ext] = h.pathSplit(fileSrc);
-  const dstDir = dir;
+  const dstDir = options.output ? h.pathRewrite(dir, options.output) : dir;
   const fileDst = path.join(dstDir, `${base}.m4a`);
+  const fileDstSameDir = path.join(dir, `${base}.m4a`);
   if (fs.pathExistsSync(fileDst)) {
-    log.warn(`SkipExists(${i}):`, fileDst);
+    log.warn(`SkipExists1(${i}):`, fileDst);
     return { status: 0, output: "", file: fileSrc };
+  }
+  if (fs.pathExistsSync(fileDstSameDir)) {
+    log.warn(`SkipExists2(${i}):`, fileDstSameDir);
+    return { status: 0, output: "", file: fileDstSameDir };
   }
   let args = "-n -loglevel repeat+level+info -i".split(" ");
   args.push(fileSrc);
@@ -226,6 +230,7 @@ function convertAudio(file, i, options) {
   log.debug(i, "ffmpeg", args);
   fs.ensureDirSync(dstDir);
   log.show(`Converting(${i}):`, fileSrc, file.bitRate);
+  log.info(`Converting(${i}):`, args);
   const result = executeCommand("ffmpeg", args);
   if (result.status == 0) {
     log.showGreen(`Converted(${i}):`, fileDst);

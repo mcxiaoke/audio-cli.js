@@ -6,7 +6,6 @@ const fs = require("fs-extra");
 const log = require("./lib/debug");
 const h = require("./lib/helper");
 const cue = require("./lib/cue");
-const chalk = require("chalk");
 
 function executeCommand(command, args = []) {
   const argsStr = args.join(" ");
@@ -220,7 +219,7 @@ function convertAudio(file, i, total, options) {
       " "
     )
   );
-  if (file.loseless || file.bitRate > 319) {
+  if (file.loseless || file.bitRate > 320) {
     args.push("320k");
   } else {
     args.push(file.bitRate > 256 ? "256k" : "192k");
@@ -244,7 +243,7 @@ function convertAudio(file, i, total, options) {
     //   );
     // }
   } else {
-    d.error(`Error(${i}):`, fileSrc, result.output);
+    log.error(`Error(${i}):`, fileSrc, result.output);
   }
   return result;
 }

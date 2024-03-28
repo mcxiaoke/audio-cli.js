@@ -13,8 +13,6 @@ const log = require("./lib/debug");
 const un = require("./lib/unicode");
 const cue = require("./lib/cue");
 const { boolean, option } = require("yargs");
-const sqlite = require("sqlite");
-const sqlite3 = require("sqlite3");
 const metadata = require("music-metadata");
 // debug and logging config
 const prettyError = require("pretty-error").start();
@@ -72,6 +70,7 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
         .option("libfdk", {
           alias: ["fdk", "f"],
           type: "boolean",
+          default: true,
           describe: "Use libfdk_aac encoder in ffmpeg command",
         });
     },
@@ -176,8 +175,7 @@ yargs.argv; //==yargs.parse()
 // AUDIO CLI COMMON FUNCTIONS BEGIN
 //////////////////////////////////////////////////////////////////////
 
-async function listFiles(root, options) {
-  options = options || {};
+async function listFiles(root, options = {}) {
   const startMs = Date.now();
   log.info("listFiles: Root", root, options);
   // https://www.npmjs.com/package/@nodelib/fs.walk
@@ -273,121 +271,12 @@ async function parseTags(files) {
 // AUDIO CLI COMMON FUNCTIONS END
 //////////////////////////////////////////////////////////////////////
 
-//////////////////////////////////////////////////////////////////////
-// AUDIO TAGS DATABASE METHODS BEGIN
-//////////////////////////////////////////////////////////////////////
-
-async function dbCreateTable(db) {
-  // https://www.npmjs.com/package/sqlite
-  await db.exec(
-    `CREATE TABLE IF NOT EXISTS tags (
-      size INTEGER, 
-      filename TEXT NOT NULL, 
-      path TEXT NOT NULL, 
-      format TEXT NOT NULL,
-      tags TEXT NOT NULL, 
-      UNIQUE(path),
-      PRIMARY KEY(path)
-    );`
-  );
-  return db;
-}
-
-async function dbOpenDatabase(dbFile) {
-  const filename = dbFile || "./data/audio.db";
-  log.debug("dbOpenDatabase", filename);
-  const fileDir = path.dirname(filename);
-  if (!(await fs.pathExists(fileDir))) {
-    await fs.mkdirs(fileDir);
-  }
-  sqlite3.verbose();
-  const db = await sqlite.open({
-    filename: filename,
-    driver: sqlite3.Database,
-  });
-  await dbCreateTable(db);
-  return db;
-}
-
-async function dbSaveTagRow(db, f) {
-  if (!(db && f)) {
-    throw new Error("Database and file object is required!");
-  }
-  const ret = await db.run(
-    "INSERT OR REPLACE INTO tags VALUES (?,?,?,?,?)",
-    f.size || f.stats.size || 0,
-    path.basename(f.path),
-    f.path,
-    JSON.stringify(f.format),
-    JSON.stringify(f.tags)
-  );
-  return ret;
-}
-
-async function dbSaveTags(files) {
-  // const dbFile = "./data/audio.db";
-  // if (await fs.pathExists(dbFile)) {
-  //   await fs.move(dbFile, dbFile + "." + Date.now());
-  // }
-  const results = [];
-  const db = await dbOpenDatabase();
-  const dbStartMs = Date.now();
-  // https://www.sqlite.org/lang_transaction.html
-  db.run("BEGIN");
-  try {
-    for (const [i, f] of files.entries()) {
-      if (f.format && f.tags) {
-        const ret = await dbSaveTagRow(db, f);
-        results.push(ret);
-        log.debug("dbSaveTags", i, `row-${ret.lastID} added ${f.path} `);
-      } else {
-        log.debug("dbSaveTags", i, `skip invalid ${f.path} `);
-      }
-    }
-  } catch (error) {
-    db.run("ROLLBACK");
-    log.error("dbSaveTags rollback", error);
-  }
-  db.run("COMMIT");
-  await db.close();
-  log.info("dbSaveTags", `Insert ${files.length} rows in ${h.ht(dbStartMs)}`);
-  return results;
-}
-
-async function dbReadTags(root) {
-  log.info("dbReadTags input:", root);
-  const dbStartMs = Date.now();
-  const db = await dbOpenDatabase();
-  const rows = await db.all("SELECT * FROM tags");
-  const files = await Promise.all(
-    rows.map(async (row, i) => {
-      try {
-        log.debug("dbReadTags", "read", i, row.path, row.size);
-        return {
-          path: row.path,
-          size: row.size,
-          format: JSON.parse(row.format),
-          tags: JSON.parse(row.tags),
-        };
-      } catch (error) {
-        d.E(error);
-      }
-    })
-  );
-  await db.close();
-  log.info("dbReadTags", `Read ${rows.length} rows in ${h.ht(dbStartMs)}`);
-  return files;
-}
-
-//////////////////////////////////////////////////////////////////////
-// AUDIO TAGS DATABASE METHODS END
-//////////////////////////////////////////////////////////////////////
-
 async function cmdTest(argv) {
   const ffmpegBin = "ffmpeg";
   const p = await lookpath(ffmpegBin);
-  yargs.showHelp();
-  if (!p) {
+  if (p) {
+    log.showGreen(`FFMPEG FOUND: ${p}`)
+  } else {
     log.error(
       `You must have "${ffmpegBin}" in you PATH to use split and convert command!`
     );
@@ -531,7 +420,6 @@ async function cmdConvert(argv) {
     files = files.filter((entry) => argv.all ? h.isAudioFile(entry.path) : h.isLosslessAudio(entry.path))
   }
   const fileCount = files.length;
-  const filePaths = files.map((f) => f.path);
   log.show(
     "cmdConvert",
     `${files.length} audio files found in ${root} ${h.ht(startMs)}`
@@ -547,33 +435,7 @@ async function cmdConvert(argv) {
   }
 
   if (argv.withtags) {
-    // const dbFiles = await dbReadTags(root);
-    const dbFiles = [];
-    log.info(
-      "cmdConvert",
-      `load ${dbFiles.length} entries from database ${h.ht(startMs)}`
-    );
-    let taggedFiles = dbFiles.filter((f) => filePaths.includes(f.path));
-    if (taggedFiles.length < files.length) {
-      // some files not found in db
-      // parse exif tags and save to db
-      log.warn(
-        "cmdConvert",
-        `${fileCount - taggedFiles.length
-        } files have no cached tags, need to parse file to read tags`
-      );
-      taggedFiles = await parseTags(files);
-      await dbSaveTags(files);
-      if (taggedFiles.length > 0) {
-        files = taggedFiles;
-      }
-    } else {
-      log.warn(
-        "cmdConvert",
-        "All files have cached tags in database, skip parse file"
-      );
-    }
-
+    const taggedFiles = await parseTags(files);
     if (taggedFiles.length == 0 || taggedFiles.length < fileCount) {
       log.warn(
         "cmdConvert",
@@ -767,7 +629,7 @@ async function cmdMove(argv) {
       } else if (un.strOnlyASCII(name + title + artist)) {
         // only ascii = english
         log.info(chalk.gray(`EN: ${name} ${artist}-${title}`));
-        outputs["en"] &&
+        outputs.en &&
           outputs["en"].input.push([
             f.path,
             path.join(outputs["en"].output, name),

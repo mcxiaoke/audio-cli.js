@@ -214,7 +214,8 @@ function convertAudio(file, i, total, options) {
 
   const fileSrc = path.resolve(file.path);
   const [dir, base, ext] = h.pathSplit(fileSrc);
-  const dstDir = path.resolve(options.output || dir || "output");
+  // const dstDir = path.resolve(options.output || dir || "output");
+  const dstDir = h.pathRewrite(dir, options.output || dir || "output");
   const fileDst = path.join(dstDir, `${base} [${quality}].m4a`);
   const fileDstTemp = path.join(dstDir, `TMP ${base} [${quality}].m4a`);
   const fileDstSameDir = path.join(dir, `${base} [${quality}].m4a`);

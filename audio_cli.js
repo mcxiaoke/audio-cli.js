@@ -408,7 +408,7 @@ async function splitAllCue(files, useLibfdkAAC) {
 async function cmdConvert(argv) {
   log.info("cmdConvert", argv);
   const root = path.resolve(argv.input);
-  const output = path.resolve(argv.output || root);
+  const output = path.resolve(argv.output) || path.join(root, 'output');
   log.show("cmdConvert input:", root);
   log.show("cmdConvert output:", output);
   if (!root || !await fs.pathExists(root)) {

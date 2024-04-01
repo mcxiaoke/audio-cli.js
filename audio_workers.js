@@ -10,6 +10,7 @@ const cue = require("./lib/cue");
 function executeCommand(command, args = []) {
   const argsStr = args.join(" ");
   const result = spawnSync(command, args);
+  log.info(command, argsStr);
   let output;
   if (result.status != 0) {
     output = iconv.decode(result.stderr, "utf8");
@@ -193,17 +194,30 @@ function splitTracks(file, i, options) {
   return r;
 }
 
+const QUALITY_LIST = ["0", "128", "192", "256", "320"];
+
 // convert one mp3/ape/wav/flac to single aac file
 function convertAudio(file, i, total, options) {
   options = options || {};
   options.logLevel && log.setLevel(options.logLevel);
   log.info(`Processing(${i}):`, file.path, options);
   // ls *.mp3 | parallel ffmpeg -n -loglevel repeat+level+warning -i "{}" -map a:0 -c:a libfdk_aac -b:a 192k output/"{.}".m4a -hide_banner
+
+  let quality;
+  if (QUALITY_LIST.includes(options.quality)) {
+    quality = `${options.quality}k`;
+  } else if (!file.lossless && file.bitrate <= 320) {
+    quality = file.bitrate > 256 ? "256k" : "192k";
+  } else {
+    quality = "320k";
+  }
+
   const fileSrc = path.resolve(file.path);
   const [dir, base, ext] = h.pathSplit(fileSrc);
   const dstDir = options.output ? h.pathRewrite(dir, options.output) : dir;
-  const fileDst = path.join(dstDir, `${base}.m4a`);
-  const fileDstSameDir = path.join(dir, `${base}.m4a`);
+  const fileDst = path.join(dstDir, `${base} [${quality}].m4a`);
+  const fileDstTemp = path.join(dstDir, `TMP ${base} [${quality}].m4a`);
+  const fileDstSameDir = path.join(dir, `${base} [${quality}].m4a`);
   if (fs.pathExistsSync(fileDst)) {
     log.warn(`SkipExists1(${i}):`, fileDst);
     return { status: 0, output: "", file: fileSrc };
@@ -212,27 +226,25 @@ function convertAudio(file, i, total, options) {
     log.warn(`SkipExists2(${i}):`, fileDstSameDir);
     return { status: 0, output: "", file: fileDstSameDir };
   }
-  let args = "-n -loglevel repeat+level+info -i".split(" ");
+  let args = "-hide_banner -n -loglevel repeat+level+info -i".split(" ");
   args.push(fileSrc);
   args = args.concat(
     `-map a:0 -c:a ${options.useLibfdkAAC ? "libfdk_aac" : "aac"} -b:a`.split(
       " "
     )
   );
-  if (file.loseless || file.bitRate > 320) {
-    args.push("320k");
-  } else {
-    args.push(file.bitRate > 256 ? "256k" : "192k");
-  }
-  args.push(fileDst);
-  args.push("-hide_banner");
+
+  args.push(quality);
+  // args.push("-f mp4");
+  args.push(fileDstTemp);
   log.debug(i, "ffmpeg", args);
   fs.ensureDirSync(dstDir);
-  log.show(`Converting(${i}/${total}):`, h.ps(fileSrc), file.bitRate);
+  log.show(`Converting(${i}/${total}):`, h.ps(fileSrc), file.bitrate, file.lossless);
   log.info(`Converting(${i}/${total}):`, args);
   const result = executeCommand("ffmpeg", args);
   if (result.status == 0) {
-    log.showGreen(`Converted(${i}/${total}):`, h.ps(fileDst));
+    fs.renameSync(fileDstTemp, fileDst);
+    log.showGreen(`Converted(${i}/${total}):${h.ps(fileDst)} ${quality}`);
     //caution: delete orignal audio file
     // try {
     //   fs.rmSync(fileSrc);
@@ -243,7 +255,8 @@ function convertAudio(file, i, total, options) {
     //   );
     // }
   } else {
-    log.error(`Error(${i}):`, fileSrc, result.output);
+    fs.removeSync(fileDstTemp);
+    log.error(`Error(${i}):`, fileSrc, result.output.substring(0, 80));
   }
   return result;
 }

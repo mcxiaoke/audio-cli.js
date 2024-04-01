@@ -25,6 +25,8 @@ prettyError.skipNodeFiles();
 // COMMAND LINE ARGS PARSE AND SETUP BEGIN
 //////////////////////////////////////////////////////////////////////
 
+const clamp = (num, min, max) => num > max ? max : num < min ? min : num;
+
 const configCli = (argv) => {
   // log.setName("AudioCli");
   log.setLevel(argv.verbose);
@@ -118,6 +120,12 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           type: "boolean",
           default: true,
           describe: "handle all audio files",
+        })
+        .option("quality", {
+          alias: "q",
+          type: "string",
+          default: "0",
+          describe: "audio quality, bitrate, eg. 0(auto)/128/192/256/320",
         })
         .option("jobs", {
           alias: "j",
@@ -228,22 +236,23 @@ function selectAudioTag(mt) {
 }
 
 async function parseTags(files) {
-  log.info("parseTags", `processing ${files.length} files`);
+  log.show("parseTags", `processing ${files.length} files`);
   const start = Date.now();
   const results = [];
   for (const [i, f] of files.entries()) {
     let mt;
     try {
       mt = await metadata.parseFile(f.path, { skipCovers: true });
-      if (mt && mt.format.tagTypes && mt.format.tagTypes.length > 0) {
-        log.show(
+      if (mt?.format.tagTypes && mt.format.tagTypes.length > 0) {
+        log.info(
           "parseTags",
           i,
           files.length,
           h.ps(f.path),
           mt.common.artist,
           mt.common.title,
-          mt.format.tagTypes
+          mt.format.bitrate,
+          mt.format.lossless
         );
       } else {
         log.info("parseTags", i, "no tags found", f.path);
@@ -255,8 +264,8 @@ async function parseTags(files) {
       }
     }
 
-    f.tags = mt && mt.common;
-    f.format = mt && mt.format;
+    f.tags = mt?.common;
+    f.format = mt?.format;
     f.format && results.push(f);
   }
   const elapsed = Date.now() - start;
@@ -413,9 +422,10 @@ async function cmdConvert(argv) {
   // keep only non-m4a audio files
   // todo add check to ensure is audio file
   let files = await listFiles(root);
+  files = files.sort((a, b) => a.path.localeCompare(b.path));
   const extensions = (argv.extensions || "").toLowerCase();
-  if (extensions.length >= 3) {
-    files = files.filter(entry => h.isAudioFile(entry.path) && extensions.includes(h.ext(entry.path)))
+  if (extensions?.length >= 3) {
+    files = files.filter(entry => extensions.includes(h.ext(entry.path)))
   } else {
     files = files.filter((entry) => argv.all ? h.isAudioFile(entry.path) : h.isLosslessAudio(entry.path))
   }
@@ -442,6 +452,8 @@ async function cmdConvert(argv) {
         `${fileCount - taggedFiles.length
         } files have no cached tags finally`
       );
+    } else {
+      files = taggedFiles;
     }
   }
 
@@ -463,7 +475,7 @@ async function cmdConvert(argv) {
     "cmdConvert",
     `There are ${files.length} audio files ready to convert`
   );
-  const jobCount = argv.jobs || cpuCount / 2;
+  const jobCount = clamp(Math.round(argv.jobs || cpuCount / 2), 1, 16);
   const answer = await inquirer.prompt([
     {
       type: "confirm",
@@ -475,7 +487,7 @@ async function cmdConvert(argv) {
     },
   ]);
   if (answer.yes) {
-    const results = await convertAll(files, argv.libfdk || true, argv.output, jobCount);
+    const results = await convertAll(files, argv.libfdk || true, argv.output, argv.quality, jobCount);
     log.showGreen(
       "cmdConvert",
       `All ${results.length} audio files are converted to AAC format.`
@@ -525,11 +537,15 @@ async function checkFiles(files, output) {
         );
         return false;
       }
-      if (h.isLosslessAudio(f.path) || (f.format && f.format.lossless)) {
-        f.bitRate = 1000;
+
+      if (f.format) {
+        f.bitrate = f.format.bitrate;
+        f.lossless = f.format.lossless;
+      } else if (h.isLosslessAudio(f.path)) {
+        f.bitrate = 1000;
         f.lossless = true;
       } else {
-        f.bitRate = (f.format && f.format.bitrate) / 1000;
+        f.bitrate = 320;
         f.lossless = false;
       }
       log.info("checkFiles", `OK (${index}): ${h.ps(f.path)}`);
@@ -541,19 +557,18 @@ async function checkFiles(files, output) {
   return files;
 }
 
-async function convertAll(files, useLibfdk, output, jobCount) {
-  log.info("convertAll", `Adding ${files.length} converting tasks`);
+async function convertAll(files, useLibfdk, output, quality, jobCount) {
+  log.info("convertAll", `Adding ${files.length} converting tasks fdk=${useLibfdk} q=${quality}`);
   const pool = workerpool.pool(__dirname + "/audio_workers.js", {
     maxWorkers: jobCount,
     workerType: "process",
   });
   log.debug("convertAll", pool);
   const startMs = Date.now();
-  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk, output: output };
+  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk, quality: quality, output: output };
   const results = await Promise.all(
     files.map(async (f, i) => {
-      const result = await pool.exec("convertAudio", [f, i + 1, files.length, options]);
-      return result;
+      return await pool.exec("convertAudio", [f, i + 1, files.length, options]);
     })
   );
   await pool.terminate();

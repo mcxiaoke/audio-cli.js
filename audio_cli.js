@@ -507,7 +507,7 @@ async function checkFiles(files, output) {
       const [dir, base, ext] = h.pathSplit(f.path);
       const dstDir = output ? h.pathRewrite(dir, output) : dir;
       const fileDst = path.join(dstDir, `${base}.m4a`);
-      const fileDstSameDir = path.join(dir, `${base}.m4a`);
+      // const fileDstSameDir = path.join(dir, `${base}.m4a`);
 
       if (await fs.pathExists(fileDst)) {
         log.showGray(
@@ -517,18 +517,18 @@ async function checkFiles(files, output) {
         return false;
       }
 
-      if (await fs.pathExists(fileDstSameDir)) {
-        log.showGray(
-          "checkFiles",
-          `SkipExists2: ${h.ps(fileDstSameDir)}`, index
-        );
-        return false;
-      }
+      // if (await fs.pathExists(fileDstSameDir)) {
+      //   log.showGray(
+      //     "checkFiles",
+      //     `SkipExists2: ${h.ps(fileDstSameDir)}`, index
+      //   );
+      //   return false;
+      // }
 
-      if (ext && ext.toLowerCase() == ".m4a") {
-        log.showGray("checkFiles", `SkipAAC: ${h.ps(f.path)}`, index);
-        return false;
-      }
+      // if (ext && ext.toLowerCase() == ".m4a") {
+      //   log.showGray("checkFiles", `SkipAAC: ${h.ps(f.path)}`, index);
+      //   return false;
+      // }
       const cuefile = path.join(dir, `${base}.cue`);
       if (await fs.pathExists(cuefile)) {
         log.showGray(

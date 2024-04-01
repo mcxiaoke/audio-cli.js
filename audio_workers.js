@@ -194,7 +194,7 @@ function splitTracks(file, i, options) {
   return r;
 }
 
-const QUALITY_LIST = ["0", "128", "192", "256", "320"];
+const QUALITY_LIST = ["128", "192", "256", "320"];
 
 // convert one mp3/ape/wav/flac to single aac file
 function convertAudio(file, i, total, options) {

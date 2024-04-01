@@ -475,7 +475,7 @@ async function cmdConvert(argv) {
     "cmdConvert",
     `There are ${files.length} audio files ready to convert`
   );
-  const jobCount = clamp(Math.round(argv.jobs || cpuCount / 2), 1, 16);
+  const jobCount = clamp(Math.round(argv.jobs || cpuCount / 4), 1, 16);
   const answer = await inquirer.prompt([
     {
       type: "confirm",

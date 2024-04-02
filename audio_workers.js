@@ -225,7 +225,7 @@ function convertAudio(file, i, total, options = {}) {
   args.push(file.fileDstTemp);
   log.debug(i, "ffmpeg", args);
   fs.ensureDirSync(file.dstDir);
-  log.show(`Converting(${i}/${total}):`, h.ps(fileSrc), file.bitrate, file.lossless);
+  log.show(`Converting(${i}/${total}):`, h.ps(fileSrc), file.lossless, h.ht(options.startMs));
   log.info(`Converting(${i}/${total}):`, args);
   const result = executeCommand("ffmpeg", args);
   if (result.status == 0) {

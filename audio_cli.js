@@ -257,10 +257,10 @@ async function parseTags(files) {
           mt.format.lossless
         );
       } else {
-        log.info("parseTags", i, "no tags found", f.path);
+        log.info("parseTags", i, "no tags found", h.ps(f.path));
       }
     } catch (error) {
-      log.warn("parseTags", i, "no tags found", f.path, error.message);
+      log.warn("parseTags", i, "no tags found", h.ps(f.path), error.message);
       if (log.getLevel() >= 2) {
         console.error(i, error, f.path);
       }
@@ -534,13 +534,20 @@ async function checkFiles(files, argv) {
 
       const quality = checkOneFile(f, argv);
 
+
+
       const index = i + 1;
       const [dir, base, ext] = h.pathSplit(f.path);
-      const dstDir = h.pathRewrite(dir, argv.output || dir || "output");
-      const nameBase = argv.suffix ? `${base} [${quality}]` : `${base}`;
-      const fileDst = path.join(dstDir, `${nameBase}.m4a`);
-      const fileDstTemp = path.join(dstDir, `TMP_${nameBase}.m4a`);
-      const fileDstSameDir = path.join(dir, `${nameBase}.m4a`);
+      // 如果没有指定输出目录，直接输出在原文件同目录；否则使用指定输出目录
+      const dstDir = argv.output ? h.pathRewrite(dir, argv.output || "output") : path.resolve(dir);
+
+      const dstNameBase = argv.suffix ? `${base} [${quality}]` : `${base}`;
+      const fileDst = path.join(dstDir, `${dstNameBase}.m4a`);
+      const fileDstTemp = path.join(dstDir, `TMP_${dstNameBase}.m4a`);
+      const fileDstSameDir = path.join(dir, `${dstNameBase}.m4a`);
+
+      log.info(logTag, `SRC (${index}): ${h.ps(f.path)}`);
+      log.info(logTag, `DST (${index}): ${h.ps(fileDst)}`);
 
       f.dstDir = dstDir;
       f.fileDst = fileDst;
@@ -591,7 +598,7 @@ async function convertAll(files, useLibfdk, jobCount) {
   });
   log.debug("convertAll", pool);
   const startMs = Date.now();
-  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk };
+  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk, startMs: Date.now() };
   const results = await Promise.all(
     files.map(async (f, i) => {
       return await pool.exec("convertAudio", [f, i + 1, files.length, options]);

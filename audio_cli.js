@@ -457,7 +457,7 @@ async function cmdConvert(argv) {
     }
   }
 
-  files = await checkFiles(files, output);
+  files = await checkFiles(files, argv);
 
   log.info(
     "cmdConvert",
@@ -487,7 +487,7 @@ async function cmdConvert(argv) {
     },
   ]);
   if (answer.yes) {
-    const results = await convertAll(files, argv.libfdk || true, argv.output, argv.quality, jobCount);
+    const results = await convertAll(files, argv.libfdk || true, jobCount);
     log.showGreen(
       "cmdConvert",
       `All ${results.length} audio files are converted to AAC format.`
@@ -497,75 +497,99 @@ async function cmdConvert(argv) {
   }
 }
 
-async function checkFiles(files, output) {
-  log.info("checkFiles", `before, files count:`, files.length);
+const QUALITY_LIST = ["128", "192", "256", "320"];
+
+function checkOneFile(file, argv) {
+  if (file.format) {
+    file.bitrate = file.format.bitrate;
+    file.lossless = file.format.lossless;
+  } else if (h.isLosslessAudio(file.path)) {
+    file.bitrate = 1000;
+    file.lossless = true;
+  } else {
+    file.bitrate = 320;
+    file.lossless = false;
+  }
+
+  let quality;
+  if (QUALITY_LIST.includes(argv.quality)) {
+    quality = `${argv.quality}k`;
+  } else if (!file.lossless && file.bitrate <= 320) {
+    quality = file.bitrate > 256 ? "256k" : "192k";
+  } else {
+    quality = "320k";
+  }
+  file.quality = quality;
+  return quality;
+}
+
+async function checkFiles(files, argv) {
+  const logTag = "Check";
+  log.info(logTag, `before, files count:`, files.length);
   const results = await Promise.all(
     // true means keep
     // false mean skip
-    files.map(async (f, i) => {
+    files = files.map(async (f, i) => {
+
+      const quality = checkOneFile(f, argv);
+
       const index = i + 1;
       const [dir, base, ext] = h.pathSplit(f.path);
-      const dstDir = output ? h.pathRewrite(dir, output) : dir;
-      const fileDst = path.join(dstDir, `${base}.m4a`);
-      // const fileDstSameDir = path.join(dir, `${base}.m4a`);
+      const dstDir = h.pathRewrite(dir, argv.output || dir || "output");
+      const fileDst = path.join(dstDir, `${base} [${quality}].m4a`);
+      const fileDstTemp = path.join(dstDir, `TMP ${base} [${quality}].m4a`);
+      const fileDstSameDir = path.join(dir, `${base} [${quality}].m4a`);
+
+      f.dstDir = dstDir;
+      f.fileDst = fileDst;
+      f.fileDstTemp = fileDstTemp;
+      f.fileDstSameDir = fileDstSameDir;
 
       if (await fs.pathExists(fileDst)) {
         log.showGray(
-          "checkFiles",
-          `SkipExists1: ${h.ps(fileDst)}`, index
+          logTag,
+          `E1: ${h.ps(fileDst)}`, index
         );
         return false;
       }
 
-      // if (await fs.pathExists(fileDstSameDir)) {
-      //   log.showGray(
-      //     "checkFiles",
-      //     `SkipExists2: ${h.ps(fileDstSameDir)}`, index
-      //   );
-      //   return false;
-      // }
+      if (await fs.pathExists(fileDstSameDir)) {
+        log.showGray(
+          logTag,
+          `E2: ${h.ps(fileDstSameDir)}`, index
+        );
+        return false;
+      }
 
-      // if (ext && ext.toLowerCase() == ".m4a") {
-      //   log.showGray("checkFiles", `SkipAAC: ${h.ps(f.path)}`, index);
-      //   return false;
-      // }
       const cuefile = path.join(dir, `${base}.cue`);
       if (await fs.pathExists(cuefile)) {
         log.showGray(
-          "checkFiles",
-          `SkipCUE cue found ${h.ps(f.path)}`, index
+          logTag,
+          `SkipCUE ${h.ps(f.path)}`, index
         );
         return false;
       }
 
-      if (f.format) {
-        f.bitrate = f.format.bitrate;
-        f.lossless = f.format.lossless;
-      } else if (h.isLosslessAudio(f.path)) {
-        f.bitrate = 1000;
-        f.lossless = true;
-      } else {
-        f.bitrate = 320;
-        f.lossless = false;
-      }
-      log.info("checkFiles", `OK (${index}): ${h.ps(f.path)}`);
-      return true;
+      log.info(logTag, `OK (${index}): ${h.ps(f.path)}`);
+      return f;
     })
   );
-  files = files.filter((_v, i) => results[i]);
+  files = results.filter(Boolean);
   log.info("checkFiles", `after, files count:`, files.length);
   return files;
+
+
 }
 
 async function convertAll(files, useLibfdk, output, quality, jobCount) {
   log.info("convertAll", `Adding ${files.length} converting tasks fdk=${useLibfdk} q=${quality}`);
-  const pool = workerpool.pool(__dirname + "/audio_workers.js", {
+  const pool = workerpool.pool(`${__dirname}/audio_workers.js`, {
     maxWorkers: jobCount,
     workerType: "process",
   });
   log.debug("convertAll", pool);
   const startMs = Date.now();
-  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk, quality: quality, output: output };
+  const options = { logLevel: log.getLevel(), useLibfdkAAC: useLibfdk };
   const results = await Promise.all(
     files.map(async (f, i) => {
       return await pool.exec("convertAudio", [f, i + 1, files.length, options]);

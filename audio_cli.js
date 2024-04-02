@@ -112,14 +112,16 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
         .option("withtags", {
           alias: "w",
           type: "boolean",
-          default: false,
           describe: "Parse audio tags",
+        })
+        .option("suffix", {
+          type: "boolean",
+          describe: "add bitrate suffix to filename",
         })
         .option("all", {
           alias: "a",
           type: "boolean",
-          default: true,
-          describe: "handle all audio files",
+          describe: "handle all files, default loseless audio",
         })
         .option("quality", {
           alias: "q",
@@ -408,9 +410,8 @@ async function splitAllCue(files, useLibfdkAAC) {
 async function cmdConvert(argv) {
   log.info("cmdConvert", argv);
   const root = path.resolve(argv.input);
-  const output = path.resolve(argv.output) || path.join(root, 'output');
   log.show("cmdConvert input:", root);
-  log.show("cmdConvert output:", output);
+  log.show("cmdConvert output:", argv.output);
   if (!root || !await fs.pathExists(root)) {
     yargs.showHelp();
     log.error("cmdConvert", `Invalid Input: '${root}'`);
@@ -536,9 +537,10 @@ async function checkFiles(files, argv) {
       const index = i + 1;
       const [dir, base, ext] = h.pathSplit(f.path);
       const dstDir = h.pathRewrite(dir, argv.output || dir || "output");
-      const fileDst = path.join(dstDir, `${base} [${quality}].m4a`);
-      const fileDstTemp = path.join(dstDir, `TMP ${base} [${quality}].m4a`);
-      const fileDstSameDir = path.join(dir, `${base} [${quality}].m4a`);
+      const nameBase = argv.suffix ? `${base} [${quality}]` : `${base}`;
+      const fileDst = path.join(dstDir, `${nameBase}.m4a`);
+      const fileDstTemp = path.join(dstDir, `TMP_${nameBase}.m4a`);
+      const fileDstSameDir = path.join(dir, `${nameBase}.m4a`);
 
       f.dstDir = dstDir;
       f.fileDst = fileDst;
@@ -570,7 +572,7 @@ async function checkFiles(files, argv) {
         return false;
       }
 
-      log.info(logTag, `OK (${index}): ${h.ps(f.path)}`);
+      log.info(logTag, `OK (${index}): ${h.ps(fileDst)}`);
       return f;
     })
   );
@@ -581,8 +583,8 @@ async function checkFiles(files, argv) {
 
 }
 
-async function convertAll(files, useLibfdk, output, quality, jobCount) {
-  log.info("convertAll", `Adding ${files.length} converting tasks fdk=${useLibfdk} q=${quality}`);
+async function convertAll(files, useLibfdk, jobCount) {
+  log.info("convertAll", `Adding ${files.length} converting tasks fdk=${useLibfdk}`);
   const pool = workerpool.pool(`${__dirname}/audio_workers.js`, {
     maxWorkers: jobCount,
     workerType: "process",

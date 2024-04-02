@@ -200,7 +200,6 @@ function convertAudio(file, i, total, options = {}) {
   log.info(`Processing(${i}):`, file.path, options);
   // ls *.mp3 | parallel ffmpeg -n -loglevel repeat+level+warning -i "{}" -map a:0 -c:a libfdk_aac -b:a 192k output/"{.}".m4a -hide_banner
 
-  const quality = file.quality;
   const fileSrc = path.resolve(file.path);
   if (!fs.pathExistsSync(file.dstDir)) {
     fs.mkdirpSync(file.dstDir);
@@ -221,7 +220,7 @@ function convertAudio(file, i, total, options = {}) {
     )
   );
 
-  args.push(quality);
+  args.push(file.quality);
   // args.push("-f mp4");
   args.push(file.fileDstTemp);
   log.debug(i, "ffmpeg", args);
@@ -230,8 +229,8 @@ function convertAudio(file, i, total, options = {}) {
   log.info(`Converting(${i}/${total}):`, args);
   const result = executeCommand("ffmpeg", args);
   if (result.status == 0) {
-    fs.renameSync(file.fileDstTemp, fileDst);
-    log.showGreen(`Converted(${i}/${total}):${h.ps(fileDst)} ${quality}`);
+    fs.renameSync(file.fileDstTemp, file.fileDst);
+    log.showGreen(`Converted(${i}/${total}):${h.ps(file.fileDst)} ${file.quality}`);
   } else {
     fs.removeSync(file.fileDstTemp);
     log.error(`Error(${i}):`, fileSrc, result.output.substring(0, 60));

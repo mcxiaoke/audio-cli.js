@@ -109,11 +109,6 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           default: true,
           describe: "Use libfdk_aac encoder in ffmpeg command",
         })
-        .option("withtags", {
-          alias: "w",
-          type: "boolean",
-          describe: "Parse audio tags",
-        })
         .option("suffix", {
           type: "boolean",
           describe: "add bitrate suffix to filename",
@@ -127,7 +122,7 @@ const yargs = require("yargs/yargs")(process.argv.slice(2))
           alias: "q",
           type: "string",
           default: "0",
-          describe: "audio quality, bitrate, eg. 0(auto)/128/192/256/320",
+          describe: "audio quality, bitrate, eg. 128/192/256/320",
         })
         .option("jobs", {
           alias: "j",
@@ -445,17 +440,15 @@ async function cmdConvert(argv) {
     return
   }
 
-  if (argv.withtags) {
-    const taggedFiles = await parseTags(files)
-    if (taggedFiles.length == 0 || taggedFiles.length < fileCount) {
-      log.warn(
-        "cmdConvert",
-        `${fileCount - taggedFiles.length
-        } files have no cached tags finally`
-      )
-    } else {
-      files = taggedFiles
-    }
+  const taggedFiles = await parseTags(files)
+  if (taggedFiles.length < fileCount) {
+    log.warn(
+      "cmdConvert",
+      `${fileCount - taggedFiles.length
+      } files have no cached tags finally`
+    )
+  } else {
+    files = taggedFiles
   }
 
   files = await checkFiles(files, argv)
@@ -526,10 +519,10 @@ function checkOneFile(file, argv) {
   let quality
   if (QUALITY_LIST.includes(argv.quality)) {
     quality = `${argv.quality}k`
-  } else if (!file.lossless && file.bitrate <= 320) {
-    quality = file.bitrate > 256 ? "256k" : "192k"
-  } else {
+  } else if (file.lossless || file.bitrate > 320 || h.isLosslessAudio(file.path)) {
     quality = "320k"
+  } else {
+    quality = file?.bitrate > 256 ? "256k" : "192k"
   }
   file.quality = quality
   return quality
